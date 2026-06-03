@@ -50,6 +50,10 @@ private:
     static void set_control(Config& cfg, const std::string& key,
                              const std::string& value);
 
+    /// Populate the scheme section from a key/value pair.
+    static void set_scheme(Config& cfg, const std::string& key,
+                            const std::string& value);
+
     /// Populate the initialization section from a key/value pair.
     static void set_initialization(Config& cfg, const std::string& key,
                                     const std::string& value);

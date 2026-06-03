@@ -86,13 +86,21 @@ public:
     FluxVars inv_eta;            ///< Inviscid flux through η-face (j+1/2)
     FluxVars inv_zeta;           ///< Inviscid flux through ζ-face (k+1/2)
 
+    // ---- Interpolated left/right states at face half-nodes (for Riemann solver) ----
+    ConservativeVars ql_xi;      ///< Left state at ξ-face (i+1/2)
+    ConservativeVars qr_xi;      ///< Right state at ξ-face (i+1/2)
+    ConservativeVars ql_eta;     ///< Left state at η-face (j+1/2)
+    ConservativeVars qr_eta;     ///< Right state at η-face (j+1/2)
+    ConservativeVars ql_zeta;    ///< Left state at ζ-face (k+1/2)
+    ConservativeVars qr_zeta;    ///< Right state at ζ-face (k+1/2)
+
     // ---- Viscous fluxes at face half-nodes ----
     FluxVars vis_xi;             ///< Viscous flux through ξ-face (i+1/2)
     FluxVars vis_eta;            ///< Viscous flux through η-face (j+1/2)
     FluxVars vis_zeta;           ///< Viscous flux through ζ-face (k+1/2)
 
-    // ---- Primitive variable right-hand side (for time stepping) ----
-    PrimitiveVars rhs;           ///< RHS (dU/dt) in primitive form
+    // ---- Conservative variable right-hand side (for time stepping) ----
+    ConservativeVars rhs;        ///< RHS (dQ/dt) in conservative form
 
     // ========================================================================
     // Allocation

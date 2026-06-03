@@ -108,6 +108,15 @@ public:
     /// Returns nullptr if no periodic connection exists for this face.
     const Connectivity* find_periodic_connection(int face) const;
 
+    /// Find any 1-to-1 connection covering the given face (periodic or interface).
+    const Connectivity* find_face_connection(int face) const;
+
+    /// Fix ghost node coordinates on one face by copying from a donor zone.
+    /// Used for inter-zone block interfaces (non-periodic 1-to-1 connections).
+    /// The donor zone must already have its ghost layers extended.
+    void fix_interface_ghost(int face, const Grid& donor,
+                             const Connectivity& conn);
+
     /// Print grid summary to stdout.
     void print_summary() const;
 

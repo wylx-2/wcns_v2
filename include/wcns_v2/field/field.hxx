@@ -83,13 +83,25 @@ inline void Field::allocate(Int nci, Int ncj, Int nck) {
     inv_xi.allocate(nci + 1, ncj, nck);
     vis_xi.allocate(nci + 1, ncj, nck);
 
+    // Interpolated left/right states at ξ-face (i+1/2)
+    ql_xi.allocate(nci + 1, ncj, nck);
+    qr_xi.allocate(nci + 1, ncj, nck);
+
     // η-face (j+1/2): nci × (ncj+1) × nck
     inv_eta.allocate(nci, ncj + 1, nck);
     vis_eta.allocate(nci, ncj + 1, nck);
 
+    // Interpolated left/right states at η-face (j+1/2)
+    ql_eta.allocate(nci, ncj + 1, nck);
+    qr_eta.allocate(nci, ncj + 1, nck);
+
     // ζ-face (k+1/2): nci × ncj × (nck+1)
     inv_zeta.allocate(nci, ncj, nck + 1);
     vis_zeta.allocate(nci, ncj, nck + 1);
+
+    // Interpolated left/right states at ζ-face (k+1/2)
+    ql_zeta.allocate(nci, ncj, nck + 1);
+    qr_zeta.allocate(nci, ncj, nck + 1);
 
     allocated_ = true;
 }

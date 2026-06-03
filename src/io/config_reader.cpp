@@ -65,6 +65,8 @@ Config ConfigReader::read(const std::string& filename) {
             set_reference(cfg, key_lower, value);
         } else if (section == "control") {
             set_control(cfg, key_lower, value);
+        } else if (section == "scheme") {
+            set_scheme(cfg, key_lower, value);
         } else if (section == "initialization") {
             set_initialization(cfg, key_lower, value);
         } else {
@@ -167,6 +169,8 @@ void ConfigReader::set_control(Config& cfg, const std::string& key,
                                 const std::string& value) {
     if (key == "cfl") {
         cfg.cfl = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "fixed_dt") {
+        cfg.fixed_dt = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "max_iter") {
         cfg.max_iter = static_cast<Int>(std::atoi(value.c_str()));
     } else if (key == "output_freq") {
@@ -182,6 +186,28 @@ void ConfigReader::set_control(Config& cfg, const std::string& key,
     } else {
         std::cerr << "ConfigReader: warning: unknown key \""
                   << key << "\" in [control] section\n";
+    }
+}
+
+void ConfigReader::set_scheme(Config& cfg, const std::string& key,
+                               const std::string& value) {
+    if (key == "interp_vars") {
+        cfg.interp_vars = value;
+    } else if (key == "interp_type") {
+        cfg.interp_type = value;
+    } else if (key == "mdcd_diss") {
+        cfg.mdcd_diss = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "mdcd_disp") {
+        cfg.mdcd_disp = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "mdcd_sai_ref") {
+        cfg.mdcd_sai_ref = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "riemann_type") {
+        cfg.riemann_type = value;
+    } else if (key == "entropy_fix_eps") {
+        cfg.entropy_fix_eps = static_cast<Real>(std::atof(value.c_str()));
+    } else {
+        std::cerr << "ConfigReader: warning: unknown key \""
+                  << key << "\" in [scheme] section\n";
     }
 }
 

@@ -7,6 +7,8 @@
 #include "wcns_v2/parallel/decomposer.h"
 #include "wcns_v2/parallel/local_block.h"
 #include "wcns_v2/parallel/halo_exchange.h"
+#include "wcns_v2/parallel/flux_halo_exchange.h"
+#include <map>
 #include <string>
 #include <vector>
 
@@ -32,6 +34,15 @@ public:
     /// Exchange halo (ghost) data for all arrays of all local blocks.
     /// This is the primary communication call during time stepping.
     void exchange_all_halos(std::vector<LocalBlock>& blocks);
+
+    /// Exchange inviscid face-flux halos for all local blocks.
+    ///
+    /// After the Riemann solver computes face fluxes, this exchanges ng+1
+    /// face-flux slices at inter-zone connectivity boundaries so that
+    /// ghost-face fluxes are consistent with the neighbor block's interior
+    /// face fluxes.  Must be called after Riemann solver and before the
+    /// 6-point centered difference in InviscidRHS.
+    void exchange_flux_halos(std::vector<LocalBlock>& blocks);
 
     // ========================================================================
     // Global reductions (for convergence checks, CFL computation, etc.)
@@ -59,6 +70,13 @@ private:
 
     /// One HaloExchange per local block.
     std::vector<HaloExchange> halo_ex_;
+
+    /// One FluxHaloExchange per local block.
+    std::vector<FluxHaloExchange> flux_halo_ex_;
+
+    /// Map from original zone name → (rank, global_block_id).
+    /// Built during initialize() for resolving inter-zone connectivity.
+    std::map<std::string, std::pair<int,int>> zone_to_block_;
 };
 
 #include "parallel_manager.hxx"

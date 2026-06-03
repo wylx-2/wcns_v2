@@ -26,9 +26,45 @@ inline void ParallelManager::initialize(
     }
     Int nz = static_cast<Int>(zones.size());
 
-    // ---- Step 2: Extend ghost layers & compute metrics on all zones ----
+    // ---- Step 2: Extend ghost layers on all zones ----
     for (auto& z : zones) {
         z.extend_ghost_layers();
+    }
+
+    // ---- Step 2b: Fix interface ghost nodes using 1-to-1 connectivity ----
+    // For inter-zone connections, ghost node coordinates should come from
+    // the donor zone's interior nodes, not from linear extrapolation.
+    for (auto& z : zones) {
+        for (int face = 0; face < 6; ++face) {
+            const Connectivity* conn = z.find_face_connection(face);
+            if (!conn) continue;
+            // Within-zone connections are already handled correctly
+            // by fill_ghost_face_periodic during extend_ghost_layers.
+            if (conn->donor_name == z.name) continue;
+
+            // Find donor zone by name
+            Grid* donor = nullptr;
+            for (auto& d : zones) {
+                if (d.name == conn->donor_name) { donor = &d; break; }
+            }
+            if (donor) {
+                z.fix_interface_ghost(face, *donor, *conn);
+            }
+        }
+    }
+
+    // ---- Step 2c: Recompute cell centers (ghost nodes changed in 2b) ----
+    // Cell centers were originally computed inside extend_ghost_layers()
+    // from extrapolated ghost nodes.  After fix_interface_ghost corrected
+    // the ghost node coordinates, the cell-center coordinates and volumes
+    // must be recomputed.
+    for (auto& z : zones) {
+        z.compute_cell_centers();
+        z.compute_cell_volumes();
+    }
+
+    // ---- Step 2d: Compute metrics on all zones ----
+    for (auto& z : zones) {
         z.compute_metrics();
         z.compute_face_metrics();
     }
@@ -36,6 +72,28 @@ inline void ParallelManager::initialize(
     // ---- Step 3: Domain decomposition (deterministic, all procs same result) ----
     std::vector<SubBlock> decomp = BlockDecomposer::decompose(zones, nprocs_, cfg.ng);
     total_blocks_ = static_cast<int>(decomp.size());
+
+    // ---- Build zone name → (rank, block_id) mapping for flux halo exchange ----
+    zone_to_block_.clear();
+    for (std::size_t i = 0; i < decomp.size(); ++i) {
+        const SubBlock& sb = decomp[i];
+        // For full-zone blocks (sub_id == 0, not split), use the original zone name.
+        // The zone_id indexes into the original zones vector.
+        if (sb.sub_id == 0) {
+            // Check if this zone was split
+            bool was_split = false;
+            for (const auto& other : decomp) {
+                if (other.zone_id == sb.zone_id && other.sub_id != sb.sub_id) {
+                    was_split = true;
+                    break;
+                }
+            }
+            if (!was_split) {
+                const std::string& zname = zones[static_cast<std::size_t>(sb.zone_id)].name;
+                zone_to_block_[zname] = {sb.assigned_rank, static_cast<int>(i)};
+            }
+        }
+    }
 
     // ---- Step 4: Build LocalBlocks assigned to this process ----
     for (std::size_t i = 0; i < decomp.size(); ++i) {
@@ -73,6 +131,12 @@ inline void ParallelManager::initialize(
     halo_ex_.resize(blocks.size());
     for (std::size_t i = 0; i < blocks.size(); ++i) {
         halo_ex_[i].setup(blocks[i]);
+    }
+
+    // ---- Step 5b: Setup FluxHaloExchange for each local block ----
+    flux_halo_ex_.resize(blocks.size());
+    for (std::size_t i = 0; i < blocks.size(); ++i) {
+        flux_halo_ex_[i].setup(blocks[i], zone_to_block_);
     }
 
     // ---- Print summary ----
@@ -114,6 +178,16 @@ inline void ParallelManager::exchange_all_halos(std::vector<LocalBlock>& blocks)
             &blocks[i].field.prim.p
         };
         halo_ex_[i].exchange_multi(arrays, blocks[i]);
+    }
+}
+
+// ============================================================================
+// Exchange flux halos
+// ============================================================================
+
+inline void ParallelManager::exchange_flux_halos(std::vector<LocalBlock>& blocks) {
+    for (std::size_t i = 0; i < blocks.size(); ++i) {
+        flux_halo_ex_[i].exchange(blocks[i], blocks);
     }
 }
 

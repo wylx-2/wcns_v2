@@ -14,7 +14,11 @@
 /// Periodic boundaries: centered stencils extend into ghost region
 ///   (ghost data is assumed valid from periodic copy / halo exchange).
 
+// Forward declarations for friend access to one-sided interpolation stencils
+class WcnsInterpBase;
+
 class InterpDiff {
+    friend class WcnsInterpBase;
 public:
     // ========================================================================
     // 3D array operations
@@ -62,24 +66,29 @@ private:
     /// Uses cells [i-2 .. i+3].  Caller guarantees these indices are valid.
     static Real interp_center_6pt(const Real* a, Int i);
 
-    /// One-sided interpolation at left boundary — 1st half-node from face.
-    /// a[0..4] are the first five *physical* cell-center values.
+    /// One-sided interpolation at left boundary — half-node a_{-1/2}
+    /// (before the first cell).  Uses cells a[0..4].
     static Real interp_left_1st(const Real* a);
 
-    /// One-sided interpolation at left boundary — 2nd half-node from face.
-    /// a[0..4] are the first five *physical* cell-center values.
+    /// One-sided interpolation at left boundary — half-node a_{1/2}
+    /// (between cell 0 and cell 1).  Uses cells a[0..4].
     static Real interp_left_2nd(const Real* a);
 
-    /// One-sided interpolation at right boundary — 1st half-node from face
-    /// (the last physical half-node).
-    /// a[0..4] are the last five *physical* cell-center values
-    /// (a[4] is the last physical cell).
+    /// One-sided interpolation at left boundary — half-node a_{3/2}
+    /// (between cell 1 and cell 2).  Uses cells a[0..4].
+    static Real interp_left_3rd(const Real* a);
+
+    /// One-sided interpolation at right boundary — half-node a_{n-1/2}
+    /// (after the last cell).  Uses the last five cells a[n-5..n-1].
     static Real interp_right_1st(const Real* a);
 
-    /// One-sided interpolation at right boundary — 2nd half-node from face
-    /// (second-to-last physical half-node).
-    /// a[0..4] are the last five *physical* cell-center values.
+    /// One-sided interpolation at right boundary — half-node a_{n-3/2}
+    /// (between cell n-2 and cell n-1).  Uses cells a[n-5..n-1].
     static Real interp_right_2nd(const Real* a);
+
+    /// One-sided interpolation at right boundary — half-node a_{n-5/2}
+    /// (between cell n-3 and cell n-2).  Uses cells a[n-5..n-1].
+    static Real interp_right_3rd(const Real* a);
 
     // ========================================================================
     // 1D differentiation from half-nodes  (i+1/2 → cell center)
@@ -90,34 +99,38 @@ private:
     /// Uses ah[i-3 .. i+2].  Caller guarantees these indices are valid.
     static Real diff_center_6pt(const Real* ah, Int i, Real dh);
 
-    /// One-sided differentiation at left boundary — 1st physical cell.
-    /// i0 = ng (index of first physical cell).
+    /// One-sided differentiation at absolute left end — cell 0.
+    /// ah has n+1 entries with convention ah[i] = a_{i-1/2}; i0=0 is the
+    /// first half-node (a_{-1/2}).
     static Real diff_left_1st(const Real* ah, Int i0, Real dh);
 
-    /// One-sided differentiation at left boundary — 2nd physical cell.
-    /// i0 = ng (index of first physical cell).
+    /// One-sided differentiation at absolute left end — cell 1.
+    /// i0=0 is the first half-node (a_{-1/2}).
     static Real diff_left_2nd(const Real* ah, Int i0, Real dh);
 
-    /// One-sided differentiation at right boundary — last physical cell.
-    /// i1 = index of last physical cell (= ni-1-ng for i-direction).
+    /// One-sided differentiation at absolute right end — last cell (n-1).
+    /// i1=n is the last half-node (a_{n-1/2}).
     static Real diff_right_1st(const Real* ah, Int i1, Real dh);
 
-    /// One-sided differentiation at right boundary — 2nd-to-last physical cell.
+    /// One-sided differentiation at absolute right end — cell n-2.
+    /// i1=n is the last half-node (a_{n-1/2}).
     static Real diff_right_2nd(const Real* ah, Int i1, Real dh);
 
     // ========================================================================
     // 1D line helpers
     // ========================================================================
 
-    /// Fill half-node array ah[0..n-2] from cell-center array a[0..n-1].
+    /// Fill half-node array ah[0..n] from cell-center array a[0..n-1].
+    /// Convention: ah[i] = a_{i-1/2}.  There are n+1 half-nodes for n cells.
     /// @param n     number of cell centers in this line
-    /// @param ng    ghost layers
     /// @param left_periodic, right_periodic — boundary type switches
-    static void interp_line(const Real* a, Real* ah, Int n, Int ng,
+    static void interp_line(const Real* a, Real* ah, Int n,
                             bool left_periodic, bool right_periodic);
 
-    /// Fill derivative array da[0..n-1] from half-node array ah[0..n-2].
-    static void diff_line(const Real* ah, Real* da, Int n, Int ng, Real dh,
+    /// Fill derivative array da[0..n-1] from half-node array ah[0..n].
+    /// One-sided stencils at absolute ends (cells 0,1 and n-1,n-2);
+    /// centered 6-point for cells 2..n-3.
+    static void diff_line(const Real* ah, Real* da, Int n, Real dh,
                           bool left_periodic, bool right_periodic);
 };
 

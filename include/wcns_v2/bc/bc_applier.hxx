@@ -20,6 +20,11 @@ inline void BoundaryConditionApplier::apply_all(LocalBlock& lb,
 
     // Stage 3: correct corner ghost cells (intersection of 3 faces)
     apply_corner_ghost(lb);
+
+    // Sync conservative variables from primitive at ghost cells.
+    // (BC only writes prim; cons must be updated so interpolation
+    //  and flux schemes read consistent ghost data.)
+    lb.field.prim_to_cons(cfg.gamma);
 }
 
 // ============================================================================
