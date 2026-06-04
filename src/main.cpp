@@ -1,4 +1,5 @@
 #include "wcns_v2/core/config.h"
+#include "wcns_v2/core/residual.h"
 #include "wcns_v2/field/field.h"
 #include "wcns_v2/io/config_reader.h"
 #include "wcns_v2/init/flow_initializer.h"
@@ -9,8 +10,14 @@
 #include "wcns_v2/scheme/wcns_interp.h"
 #include "wcns_v2/scheme/riemann_solver.h"
 #include "wcns_v2/scheme/inviscid_rhs.h"
+#include "wcns_v2/scheme/viscid_rhs.h"
+#include "wcns_v2/scheme/body_force.h"
+#include "wcns_v2/time/time_integrator.h"
+#include "wcns_v2/io/solution_writer.h"
+#include "wcns_v2/io/restart_writer.h"
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -18,7 +25,7 @@
 #include <stdexcept>
 
 // ============================================================================
-// Helper: print config summary
+// Helper: print config summary (rank 0 only)
 // ============================================================================
 static void print_config(const Config& cfg) {
     if (ParallelEnv::rank() != 0) return;
@@ -38,121 +45,27 @@ static void print_config(const Config& cfg) {
               << "    fixed_dt     = " << cfg.fixed_dt
               << (cfg.fixed_dt > 0 ? " (fixed)" : " (CFL-based)") << "\n"
               << "    max_iter     = " << cfg.max_iter << "\n"
+              << "    max_time     = " << cfg.max_time
+              << (cfg.max_time > 0 ? "" : " (disabled)") << "\n"
+              << "    converge_tol = " << cfg.converge_tol << "\n"
               << "    output_freq  = " << cfg.output_freq << "\n"
+              << "    restart_freq = " << cfg.restart_freq << "\n"
+              << "    residual_freq= " << cfg.residual_freq << "\n"
               << "    time_scheme  = " << cfg.time_scheme << "\n"
               << "    ghost layers = " << cfg.ng << "\n"
+              << "  Scheme:\n"
+              << "    interp_type   = " << cfg.interp_type << "\n"
+              << "    interp_vars   = " << cfg.interp_vars << "\n"
+              << "    riemann_type  = " << cfg.riemann_type << "\n"
+              << "    viscous_type  = " << cfg.viscous_type << "\n"
+              << "    body_force    = (" << cfg.body_force_x
+              << ", " << cfg.body_force_y
+              << ", " << cfg.body_force_z
+              << ") type=" << cfg.body_force_type << "\n"
               << "  Initialization:\n"
               << "    init_type    = " << cfg.init_type << "\n"
               << "    wall_type    = " << cfg.wall_type << "\n"
-              << "    body_force   = (" << cfg.body_force_x
-              << ", " << cfg.body_force_y
-              << ", " << cfg.body_force_z << ")\n"
               << "============================================\n\n";
-}
-
-// ============================================================================
-// Helper: test Field conversion
-// ============================================================================
-static void test_field_conversion(const Config& cfg) {
-    Int nci = 8, ncj = 6, nck = 4;
-
-    Field f;
-    f.allocate(nci, ncj, nck);
-
-    Real rho_inf = 1.0;
-    Real u_inf, v_inf, w_inf;
-    cfg.free_stream_velocity(u_inf, v_inf, w_inf);
-    Real p_inf = 1.0 / (cfg.gamma * cfg.Mach * cfg.Mach);
-
-    for (Int k = 0; k < nck; ++k)
-    for (Int j = 0; j < ncj; ++j)
-    for (Int i = 0; i < nci; ++i) {
-        f.prim.rho(i,j,k) = rho_inf;
-        f.prim.u(i,j,k)   = u_inf;
-        f.prim.v(i,j,k)   = v_inf;
-        f.prim.w(i,j,k)   = w_inf;
-        f.prim.p(i,j,k)   = p_inf;
-    }
-
-    f.prim_to_cons(cfg.gamma);
-    f.prim.fill(0.0);
-    f.cons_to_prim(cfg.gamma);
-
-    Real max_err = 0.0;
-    for (Int k = 0; k < nck; ++k)
-    for (Int j = 0; j < ncj; ++j)
-    for (Int i = 0; i < nci; ++i) {
-        max_err = std::max(max_err, std::abs(f.prim.rho(i,j,k) - rho_inf));
-        max_err = std::max(max_err, std::abs(f.prim.u(i,j,k)   - u_inf));
-        max_err = std::max(max_err, std::abs(f.prim.v(i,j,k)   - v_inf));
-        max_err = std::max(max_err, std::abs(f.prim.w(i,j,k)   - w_inf));
-        max_err = std::max(max_err, std::abs(f.prim.p(i,j,k)   - p_inf));
-    }
-
-    if (ParallelEnv::rank() == 0) {
-        std::cout << "  Field round-trip max error: " << max_err << "\n";
-    }
-}
-
-// ============================================================================
-// Helper: verify initialization on each local block
-// ============================================================================
-static void verify_initialization(const std::vector<LocalBlock>& blocks,
-                                   const Config& cfg) {
-    Real p_inf = 1.0 / (cfg.gamma * cfg.Mach * cfg.Mach);
-    Real u_inf, v_inf, w_inf;
-    cfg.free_stream_velocity(u_inf, v_inf, w_inf);
-
-    for (const auto& lb : blocks) {
-        Int ng = lb.grid.ng;
-        Int i0 = ng, i1 = ng + lb.nci_core() - 1;
-        Int j0 = ng, j1 = ng + lb.ncj_core() - 1;
-        Int k0 = ng, k1 = ng + lb.nck_core() - 1;
-
-        // --- Check interior values ---
-        Real max_rho_err = 0, max_u_err = 0, max_p_err = 0;
-        Real min_rho = 1e30, max_rho = -1e30;
-
-        for (Int k = k0; k <= k1; ++k)
-        for (Int j = j0; j <= j1; ++j)
-        for (Int i = i0; i <= i1; ++i) {
-            Real rho = lb.field.prim.rho(i,j,k);
-            min_rho = std::min(min_rho, rho);
-            max_rho = std::max(max_rho, rho);
-
-            if (cfg.init_type == "uniform") {
-                max_rho_err = std::max(max_rho_err, std::abs(rho - 1.0));
-                max_u_err   = std::max(max_u_err,   std::abs(lb.field.prim.u(i,j,k) - u_inf));
-                max_p_err   = std::max(max_p_err,   std::abs(lb.field.prim.p(i,j,k) - p_inf));
-            }
-        }
-
-        std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                  << " interior: rho∈[" << min_rho << ", " << max_rho << "]";
-        if (cfg.init_type == "uniform") {
-            std::cout << " | max_err: rho=" << max_rho_err
-                      << " u=" << max_u_err << " p=" << max_p_err;
-        }
-        std::cout << "\n";
-
-        // --- Check ghost cells are non-zero (BC applied) ---
-        // IMIN ghost: i=0..ng-1
-        Real g_min = 1e30, g_max = -1e30;
-        for (Int k = 0; k < lb.grid.nck; ++k)
-        for (Int j = 0; j < lb.grid.ncj; ++j)
-        for (Int d = 0; d < ng; ++d) {
-            Real v = lb.field.prim.rho(d, j, k);
-            g_min = std::min(g_min, v);
-            g_max = std::max(g_max, v);
-        }
-        std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                  << " IMIN ghost rho∈[" << g_min << ", " << g_max << "]\n";
-
-        // --- Corner check ---
-        Real c_val = lb.field.prim.rho(0, 0, 0);
-        std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                  << " corner (0,0,0) rho=" << c_val << "\n";
-    }
 }
 
 // ============================================================================
@@ -171,7 +84,9 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        // ---- Read configuration ----
+        // ================================================================
+        // 1. Read configuration
+        // ================================================================
         Config cfg;
         if (argc >= 3) {
             cfg = ConfigReader::read(argv[2]);
@@ -183,429 +98,362 @@ int main(int argc, char* argv[]) {
         }
         print_config(cfg);
 
-        // ---- Field conversion test (rank 0 only) ----
-        if (ParallelEnv::is_master()) {
-            std::cout << "--- Field Conversion Test ---\n";
-        }
-        test_field_conversion(cfg);
-
-        // ---- Parallel initialization ----
+        // ================================================================
+        // 2. Parallel initialization (grid load, decomposition, metrics)
+        // ================================================================
         ParallelManager pm;
-        std::vector<LocalBlock> local_blocks;
-        pm.initialize(argv[1], cfg, local_blocks);
+        std::vector<LocalBlock> blocks;
+        pm.initialize(argv[1], cfg, blocks);
 
-        // ---- Flow field initialization ----
+        if (ParallelEnv::is_master()) {
+            std::cout << "Grid loaded: " << pm.total_blocks()
+                      << " total blocks on " << ParallelEnv::size()
+                      << " rank(s)\n";
+        }
+
+        // ================================================================
+        // 3. Flow field initialization
+        // ================================================================
         if (ParallelEnv::is_master()) {
             std::cout << "\n--- Flow Initialization: " << cfg.init_type << " ---\n";
         }
-        for (auto& lb : local_blocks) {
+        for (auto& lb : blocks) {
             FlowInitializer::initialize(lb, cfg);
         }
 
-        // ---- Boundary condition application ----
+        // ================================================================
+        // 4. Boundary conditions + halo exchange (primitive variables)
+        // ================================================================
         if (ParallelEnv::is_master()) {
-            std::cout << "\n--- Boundary Condition Application ---\n";
+            std::cout << "Applying boundary conditions...\n";
         }
-        for (auto& lb : local_blocks) {
+        for (auto& lb : blocks) {
             BoundaryConditionApplier::apply_all(lb, cfg);
         }
+        pm.exchange_all_halos(blocks);
 
-        // ---- Halo exchange (parallel ghost cells) ----
-        pm.exchange_all_halos(local_blocks);
-        if (ParallelEnv::is_master()) {
-            std::cout << "Halo exchange completed.\n";
+        // ★ Critical: convert prim → cons so WCNS interpolation sees
+        //   correct conservative ghost-cell values from the start.
+        for (auto& lb : blocks) {
+            lb.field.prim_to_cons(cfg.gamma);
         }
 
-        // ---- Verify initialization ----
-        verify_initialization(local_blocks, cfg);
-
-        // ---- Verify metrics (GCL) ----
         if (ParallelEnv::is_master()) {
-            std::cout << "\n--- Metric Verification (GCL) ---\n";
+            std::cout << "Initialization complete.\n";
         }
-        for (auto& lb : local_blocks) {
-            Int i0 = lb.grid.ng;
-            Int i1 = i0 + lb.nci_core() - 1;
-            Int j0 = i0;
-            Int j1 = j0 + lb.ncj_core() - 1;
-            Int k0 = i0;
-            Int k1 = k0 + lb.nck_core() - 1;
 
-            bool fp[6];
-            for (int f = 0; f < 6; ++f) fp[f] = lb.neighbors[f].is_periodic;
+        // ================================================================
+        // 5. Create interpolation and Riemann solver objects (reused)
+        // ================================================================
+        auto interp   = WcnsInterpBase::create(cfg);
+        auto riemann  = RiemannSolverBase::create(cfg);
+        bool has_viscous = (cfg.viscous_type != "none");
 
-            MultiArray3D<Real> gx(lb.grid.nci, lb.grid.ncj, lb.grid.nck);
-            MultiArray3D<Real> gy(lb.grid.nci, lb.grid.ncj, lb.grid.nck);
-            MultiArray3D<Real> gz(lb.grid.nci, lb.grid.ncj, lb.grid.nck);
+        int  n_stages = TimeIntegrator::n_stages(cfg);
+        bool is_local = !ParallelEnv::is_parallel();
 
-            Real dh = 1.0;
-
-            InterpDiff::derivative(lb.grid.met_xi_x, gx, 0, dh, lb.grid.ng, fp);
-            InterpDiff::derivative(lb.grid.met_eta_x, gy, 1, dh, lb.grid.ng, fp);
-            InterpDiff::derivative(lb.grid.met_zeta_x, gz, 2, dh, lb.grid.ng, fp);
-
-            Real gcl_x = 0;
-            for (Int k = k0; k <= k1; ++k)
-            for (Int j = j0; j <= j1; ++j)
-            for (Int i = i0; i <= i1; ++i)
-                gcl_x = std::max(gcl_x, std::abs(gx(i,j,k) + gy(i,j,k) + gz(i,j,k)));
-
-            InterpDiff::derivative(lb.grid.met_xi_y, gx, 0, dh, lb.grid.ng, fp);
-            InterpDiff::derivative(lb.grid.met_eta_y, gy, 1, dh, lb.grid.ng, fp);
-            InterpDiff::derivative(lb.grid.met_zeta_y, gz, 2, dh, lb.grid.ng, fp);
-
-            Real gcl_y = 0;
-            for (Int k = k0; k <= k1; ++k)
-            for (Int j = j0; j <= j1; ++j)
-            for (Int i = i0; i <= i1; ++i)
-                gcl_y = std::max(gcl_y, std::abs(gx(i,j,k) + gy(i,j,k) + gz(i,j,k)));
-
-            InterpDiff::derivative(lb.grid.met_xi_z, gx, 0, dh, lb.grid.ng, fp);
-            InterpDiff::derivative(lb.grid.met_eta_z, gy, 1, dh, lb.grid.ng, fp);
-            InterpDiff::derivative(lb.grid.met_zeta_z, gz, 2, dh, lb.grid.ng, fp);
-
-            Real gcl_z = 0;
-            for (Int k = k0; k <= k1; ++k)
-            for (Int j = j0; j <= j1; ++j)
-            for (Int i = i0; i <= i1; ++i)
-                gcl_z = std::max(gcl_z, std::abs(gx(i,j,k) + gy(i,j,k) + gz(i,j,k)));
-
-            std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                      << " GCL: x=" << gcl_x << " y=" << gcl_y << " z=" << gcl_z << "\n";
-
-            // Jacobian range
-            Real jmin = 1e30, jmax = -1e30;
-            for (Int k = k0; k <= k1; ++k)
-            for (Int j = j0; j <= j1; ++j)
-            for (Int i = i0; i <= i1; ++i) {
-                jmin = std::min(jmin, lb.grid.jacobian(i,j,k));
-                jmax = std::max(jmax, lb.grid.jacobian(i,j,k));
+        // ================================================================
+        // 6. Open residual log file (rank 0 only)
+        // ================================================================
+        std::ofstream res_file;
+        if (ParallelEnv::is_master()) {
+            res_file.open("residual.dat");
+            if (!res_file.is_open()) {
+                throw std::runtime_error("Cannot open residual.dat for writing");
             }
-            std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                      << " Jacobian range: [" << jmin << ", " << jmax << "]\n";
+            Residual::write_header(res_file);
         }
 
-        // ---- Global reduction test ----
-        Real loc_max = local_blocks.empty() ? -1.0 : 1.0;
-        Real glob_max = ParallelManager::global_max(loc_max);
-        if (ParallelEnv::is_master()) {
-            std::cout << "\nGlobal max test: " << glob_max << " (expected: 1.0)\n";
-        }
+        // ================================================================
+        // 7. Main time loop
+        // ================================================================
+        Real time            = 0.0;
+        Real last_output_time = 0.0;
+        bool converged       = false;
+        Int iter             = 0;
 
-        // ---- Time step test ----
         if (ParallelEnv::is_master()) {
-            std::cout << "\n--- Time Step Test ---\n";
-        }
-        Real dt_local = TimeStep::compute(local_blocks, cfg);
-        Real dt_global = ParallelManager::global_min(dt_local);
-        if (ParallelEnv::is_master()) {
-            std::cout << "  Local  Δt_min = " << dt_local << "\n";
-            std::cout << "  Global Δt_min = " << dt_global << "\n";
-            if (cfg.fixed_dt > 0) {
-                std::cout << "  (using fixed_dt = " << cfg.fixed_dt << ")\n";
+            std::cout << "\n========== Starting Time Loop ==========\n"
+                      << "  Scheme: " << cfg.time_scheme
+                      << " (" << n_stages << " stage(s))\n"
+                      << "  Max iter: " << cfg.max_iter;
+            if (cfg.max_time > 0.0) {
+                std::cout << ", Max time: " << cfg.max_time;
             }
+            std::cout << "\n=========================================\n\n";
         }
 
-        // ---- WCNS interpolation test ----
-        if (ParallelEnv::is_master()) {
-            std::cout << "\n--- WCNS Interpolation Test ---\n";
-        }
-        {
-            // Test each interpolation type
-            const char* interp_types[] = {"weno_js", "mdcd_linear", "mdcd_hybrid"};
-            // Use the default config for weno_js, and set MDCD params for the others
-            Config cfg_weno = cfg;  // interp_type = "weno_js" (default in input)
-            Config cfg_mdcd_lin = cfg;  cfg_mdcd_lin.interp_type = "mdcd_linear";
-            Config cfg_mdcd_hyb = cfg;  cfg_mdcd_hyb.interp_type = "mdcd_hybrid";
+        for (iter = 1; iter <= cfg.max_iter; ++iter) {
 
-            for (const char* type_name : interp_types) {
-                Config* pcfg = &cfg_weno;
-                if (std::string(type_name) == "mdcd_linear") pcfg = &cfg_mdcd_lin;
-                if (std::string(type_name) == "mdcd_hybrid") pcfg = &cfg_mdcd_hyb;
+            // ---- 7a. Compute time step ----
+            Real dt = TimeStep::compute(blocks, cfg);
+            dt = ParallelManager::global_min(dt);
+            time += dt;
 
+            // ---- 7b. Physical time termination ----
+            if (cfg.max_time > 0.0 && time >= cfg.max_time) {
                 if (ParallelEnv::is_master()) {
-                    std::cout << "\n  Testing interp_type = " << type_name
-                              << " (diss=" << pcfg->mdcd_diss
-                              << ", disp=" << pcfg->mdcd_disp
-                              << ", sai_ref=" << pcfg->mdcd_sai_ref << ")\n";
+                    std::cout << "Reached max_time=" << cfg.max_time
+                              << " at iter=" << iter << ", time=" << time << "\n";
                 }
-
-                auto interp = WcnsInterpBase::create(*pcfg);
-
-                for (auto& lb : local_blocks) {
-                    // Run interpolation for all 3 directions
-                    interp->interp_xi(lb, *pcfg);
-
-                    // Verify ξ-direction interpolation
-                    Int ng = lb.grid.ng;
-                    Int nci = lb.field.ni();
-                    Int ncj = lb.field.nj();
-                    Int nck = lb.field.nk();
-
-                    // --- Boundary check: Q_L == Q_R at first 3 and last 3 faces ---
-                    Real max_boundary_diff = 0.0;
-                    for (Int k = 0; k < nck; ++k) {
-                    for (Int j = 0; j < ncj; ++j) {
-                        for (int h = 0; h <= 2; ++h) {
-                            Real dl = std::abs(lb.field.ql_xi.rho(h,j,k) -
-                                               lb.field.qr_xi.rho(h,j,k));
-                            max_boundary_diff = std::max(max_boundary_diff, dl);
-                        }
-                        for (int h = nci; h >= nci - 2; --h) {
-                            Real dl = std::abs(lb.field.ql_xi.rho(h,j,k) -
-                                               lb.field.qr_xi.rho(h,j,k));
-                            max_boundary_diff = std::max(max_boundary_diff, dl);
-                        }
-                    }}
-
-                    std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                              << " [" << type_name << "] xi-boundary Q_L==Q_R max diff: "
-                              << max_boundary_diff << "\n";
-
-                    // --- Interior check: uniform flow → Q_L ≈ Q_R ≈ free-stream ---
-                    Real max_interior_err = 0.0;
-                    Int h0 = 4, h1 = nci - 4;
-                    for (Int k = 4; k < nck - 4; ++k) {
-                    for (Int j = 4; j < ncj - 4; ++j) {
-                    for (Int h = h0; h <= h1; ++h) {
-                        Real err_rho = std::abs(lb.field.ql_xi.rho(h,j,k) - 1.0);
-                        max_interior_err = std::max(max_interior_err, err_rho);
-
-                        Real diff = std::abs(lb.field.ql_xi.rho(h,j,k) -
-                                             lb.field.qr_xi.rho(h,j,k));
-                        max_interior_err = std::max(max_interior_err, diff);
-                    }}}
-
-                    std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                              << " [" << type_name << "] xi-interior max deviation: "
-                              << max_interior_err << "\n";
-
-                    // --- Spot-check a few interior values ---
-                    Int ci = ng + 1, cj = ng + 1, ck = ng + 1;
-                    Int face_i = ci + 1;
-                    std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                              << " [" << type_name << "] Spot cell(" << ci << "," << cj
-                              << "," << ck << "):"
-                              << " cons.rho=" << lb.field.cons.rho(ci,cj,ck)
-                              << " Q_L(" << face_i << ")=" << lb.field.ql_xi.rho(face_i,cj,ck)
-                              << " Q_R(" << face_i << ")=" << lb.field.qr_xi.rho(face_i,cj,ck)
-                              << "\n";
-
-                    // Also interpolate eta and zeta directions (light test)
-                    interp->interp_eta(lb, *pcfg);
-                    interp->interp_zeta(lb, *pcfg);
-                    std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                              << " [" << type_name << "] eta/zeta interpolation done."
-                              << " Q_L_eta(" << ci << "," << cj+1 << "," << ck
-                              << ").rho=" << lb.field.ql_eta.rho(ci,cj+1,ck)
-                              << " Q_L_zeta(" << ci << "," << cj << "," << ck+1
-                              << ").rho=" << lb.field.ql_zeta.rho(ci,cj,ck+1)
-                              << "\n";
-                }
+                break;
             }
-        }
 
-        // ---- Riemann solver test ----
-        if (ParallelEnv::is_master()) {
-            std::cout << "\n--- Riemann Solver Test (Roe) ---\n";
-        }
-        {
-            auto riemann = RiemannSolverBase::create(cfg);
+            // ============================================================
+            // RK stage loop
+            // ============================================================
+            for (int stage = 0; stage < n_stages; ++stage) {
 
-            for (auto& lb : local_blocks) {
-                Int ng = lb.grid.ng;
-                Int nci = lb.field.ni();
-                Int ncj = lb.field.nj();
-                Int nck = lb.field.nk();
-
-                // Re-run interpolation to ensure Q_L/Q_R are fresh
-                auto interp = WcnsInterpBase::create(cfg);
-                interp->interp_xi(lb, cfg);
-                interp->interp_eta(lb, cfg);
-                interp->interp_zeta(lb, cfg);
-
-                // Solve Riemann problem in all 3 directions
-                riemann->solve_xi(lb, cfg);
-                riemann->solve_eta(lb, cfg);
-                riemann->solve_zeta(lb, cfg);
-
-                // ---- Verify: on uniform flow, dissipation must vanish ----
-                Real u_inf, v_inf, w_inf;
-                cfg.free_stream_velocity(u_inf, v_inf, w_inf);
-                Real rho_inf = 1.0;
-                Real p_inf = cfg.eos_factor();
-
-                // ξ-direction verification at interior faces
-                Int h0 = ng + 2, h1 = nci - ng - 2;
-                Real max_flux_err = 0.0;
-
-                for (Int k = 4; k < nck - 4; ++k) {
-                for (Int j = 4; j < ncj - 4; ++j) {
-                for (Int i = h0; i <= h1; ++i) {
-                    Real Sx = lb.grid.face_xi_x(i,j,k);
-                    Real Sy = lb.grid.face_xi_y(i,j,k);
-                    Real Sz = lb.grid.face_xi_z(i,j,k);
-                    Real U_inf = Sx*u_inf + Sy*v_inf + Sz*w_inf;
-
-                    // Physical flux for uniform flow
-                    Real F_phys[5];
-                    F_phys[0] = rho_inf * U_inf;
-                    F_phys[1] = rho_inf * u_inf * U_inf + p_inf * Sx;
-                    F_phys[2] = rho_inf * v_inf * U_inf + p_inf * Sy;
-                    F_phys[3] = rho_inf * w_inf * U_inf + p_inf * Sz;
-
-                    Real rhoE_inf = p_inf / (cfg.gamma - 1.0)
-                        + 0.5 * rho_inf * (u_inf*u_inf+v_inf*v_inf+w_inf*w_inf);
-                    F_phys[4] = (rhoE_inf + p_inf) * U_inf;
-
-                    Real F_roe[5] = {
-                        lb.field.inv_xi.f1(i,j,k),
-                        lb.field.inv_xi.f2(i,j,k),
-                        lb.field.inv_xi.f3(i,j,k),
-                        lb.field.inv_xi.f4(i,j,k),
-                        lb.field.inv_xi.f5(i,j,k)
-                    };
-
-                    for (int c = 0; c < 5; ++c) {
-                        Real err = std::abs(F_roe[c] - F_phys[c]);
-                        Real ref = std::max(std::abs(F_phys[c]), 1.0e-12);
-                        max_flux_err = std::max(max_flux_err, err / ref);
+                // ---- Save Q^(0) at the beginning of each time step ----
+                if (stage == 0) {
+                    for (auto& lb : blocks) {
+                        // Use Field's built-in Q0 snapshot
+                        Int nci = lb.field.ni();
+                        Int ncj = lb.field.nj();
+                        Int nck = lb.field.nk();
+                        for (Int k = 0; k < nck; ++k)
+                        for (Int j = 0; j < ncj; ++j)
+                        for (Int i = 0; i < nci; ++i) {
+                            lb.field.Q0.rho(i,j,k)  = lb.field.cons.rho(i,j,k);
+                            lb.field.Q0.rhou(i,j,k) = lb.field.cons.rhou(i,j,k);
+                            lb.field.Q0.rhov(i,j,k) = lb.field.cons.rhov(i,j,k);
+                            lb.field.Q0.rhow(i,j,k) = lb.field.cons.rhow(i,j,k);
+                            lb.field.Q0.rhoE(i,j,k) = lb.field.cons.rhoE(i,j,k);
+                        }
                     }
-                }}}
+                }
 
-                std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                          << " Roe xi-flux max relative error: " << max_flux_err
-                          << " (expected: ~0 on uniform flow)\n";
+                // ========================================================
+                // Inviscid RHS
+                // ========================================================
 
-                // Spot-check a few interior face values
-                Int ci = ng + 2, cj = ng + 2, ck = ng + 2;
-                Int fi = ci + 1;
-                std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                          << " Spot xi-face(" << fi << "," << cj << "," << ck
-                          << "): inv_xi.f1=" << lb.field.inv_xi.f1(fi,cj,ck)
-                          << " f2=" << lb.field.inv_xi.f2(fi,cj,ck)
-                          << " f5=" << lb.field.inv_xi.f5(fi,cj,ck)
-                          << "\n";
+                // WCNS interpolation: cell-center cons → face Q_L/Q_R
+                for (auto& lb : blocks) {
+                    interp->interp_xi(lb, cfg);
+                    interp->interp_eta(lb, cfg);
+                    interp->interp_zeta(lb, cfg);
+                }
 
-                // η-direction spot check
-                Int fj = cj + 1;
-                std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                          << " Spot eta-face(" << ci << "," << fj << "," << ck
-                          << "): inv_eta.f1=" << lb.field.inv_eta.f1(ci,fj,ck)
-                          << " f2=" << lb.field.inv_eta.f2(ci,fj,ck)
-                          << " f5=" << lb.field.inv_eta.f5(ci,fj,ck)
-                          << "\n";
+                // Riemann solver: Q_L/Q_R → inviscid face fluxes inv_xi/eta/zeta
+                for (auto& lb : blocks) {
+                    riemann->solve_xi(lb, cfg);
+                    riemann->solve_eta(lb, cfg);
+                    riemann->solve_zeta(lb, cfg);
+                }
 
-                // ζ-direction spot check
-                Int fk = ck + 1;
-                std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                          << " Spot zeta-face(" << ci << "," << cj << "," << fk
-                          << "): inv_zeta.f1=" << lb.field.inv_zeta.f1(ci,cj,fk)
-                          << " f2=" << lb.field.inv_zeta.f2(ci,cj,fk)
-                          << " f5=" << lb.field.inv_zeta.f5(ci,cj,fk)
-                          << "\n";
+                // Exchange inviscid face-flux halos at connectivity boundaries
+                if (!is_local) {
+                    pm.exchange_flux_halos(blocks);
+                }
+
+                // 6th-order centered difference → inviscid RHS (writes to rhs)
+                for (auto& lb : blocks) {
+                    InviscidRHS::compute(lb);
+                }
+
+                // ========================================================
+                // Viscous RHS (full pipeline: 5a → 5b → 5c → 5d → 5e)
+                // ========================================================
+                if (has_viscous) {
+
+                    // 5a: Interpolate (u,v,w,T) from cell centers to faces
+                    for (auto& lb : blocks) {
+                        ViscidRHS::interp_to_faces(lb, cfg);
+                    }
+
+                    // 5b: Compute velocity/temperature gradients at cell centers
+                    for (std::size_t bi = 0; bi < blocks.size(); ++bi) {
+                        ViscidRHS::compute_gradients(blocks[bi], blocks,
+                                                      pm.flux_halo_ex(
+                                                          static_cast<Int>(bi)),
+                                                      cfg);
+                    }
+
+                    // 5b-exchange: gradient ghost cells
+                    if (!is_local) {
+                        pm.exchange_gradient_halos(blocks);
+                    }
+
+                    // 5c: Compute cell-center Cartesian viscous flux vectors
+                    for (auto& lb : blocks) {
+                        ViscidRHS::compute_cell_viscous_flux(lb, cfg);
+                    }
+
+                    // 5c-exchange: viscous flux ghost cells
+                    if (!is_local) {
+                        pm.exchange_viscous_flux_halos(blocks);
+                    }
+
+                    // 5d: Assemble viscous face fluxes (3 directions)
+                    for (int dir = 0; dir < 3; ++dir) {
+                        // Step 1: Interpolate Cartesian fluxes to faces (all blocks)
+                        for (auto& lb : blocks) {
+                            ViscidRHS::interp_cart_flux_to_faces(lb, dir, cfg);
+                        }
+                        // Step 2+3: Exchange face-interpolated values + assemble
+                        for (std::size_t bi = 0; bi < blocks.size(); ++bi) {
+                            ViscidRHS::exchange_and_assemble_face_flux(
+                                blocks[bi], dir, blocks,
+                                pm.flux_halo_ex(static_cast<Int>(bi)), cfg);
+                        }
+                    }
+
+                    // 5e: 6th-order diff → viscous RHS (accumulates into rhs)
+                    for (auto& lb : blocks) {
+                        ViscidRHS::compute_rhs(lb);
+                    }
+                }
+
+                // ========================================================
+                // Body force source term (accumulates into rhs)
+                // ========================================================
+                for (auto& lb : blocks) {
+                    BodyForce::add_to_rhs(lb, cfg);
+                }
+
+                // ========================================================
+                // Time integration — advance conservative variables
+                // ========================================================
+                for (auto& lb : blocks) {
+                    TimeIntegrator::advance_stage(lb, cfg, dt, stage,
+                                                   lb.field.Q0);
+                }
+
+                // ========================================================
+                // Post-stage: cons → prim, BC, halo, prim → cons
+                // ========================================================
+
+                // Convert updated conservative variables to primitive
+                for (auto& lb : blocks) {
+                    lb.field.cons_to_prim(cfg.gamma);
+                }
+
+                // Apply boundary conditions (fills prim ghost cells on BC faces)
+                for (auto& lb : blocks) {
+                    BoundaryConditionApplier::apply_all(lb, cfg);
+                }
+
+                // Halo exchange for primitive variables
+                if (!is_local) {
+                    pm.exchange_all_halos(blocks);
+                }
+
+                // ★ Critical: convert prim → cons so that conservative ghost
+                //   cells are up-to-date for the next stage's WCNS interpolation.
+                for (auto& lb : blocks) {
+                    lb.field.prim_to_cons(cfg.gamma);
+                }
+
+                // ========================================================
+                // Final stage: residual & flow monitor
+                // ========================================================
+                if (stage == n_stages - 1) {
+
+                    if (iter % cfg.residual_freq == 0) {
+                        auto res = Residual::compute(blocks);
+                        auto mon = Residual::monitor(blocks, cfg);
+
+                        // Divergence check
+                        if (Residual::diverged(mon)) {
+                            if (ParallelEnv::is_master()) {
+                                std::cerr << "\nFATAL: Divergence detected at iter="
+                                          << iter << ", time=" << time << "\n";
+                                Residual::log(std::cerr, iter, dt, res, mon);
+                            }
+                            // Flush output before aborting
+                            if (res_file.is_open()) {
+                                Residual::log(res_file, iter, dt, res, mon);
+                                res_file.close();
+                            }
+                            ParallelEnv::finalize();
+                            return 1;
+                        }
+
+                        // Write to residual log
+                        if (ParallelEnv::is_master()) {
+                            Residual::log(res_file, iter, dt, res, mon);
+                        }
+
+                        // Convergence check
+                        if (Residual::converged(res, cfg.converge_tol)) {
+                            if (ParallelEnv::is_master()) {
+                                std::cout << "\nConverged at iter=" << iter
+                                          << ", time=" << time
+                                          << " (res_rho=" << res.rho << ")\n";
+                            }
+                            converged = true;
+                        }
+
+                        // Progress to stdout
+                        if (ParallelEnv::is_master() && iter % 10 == 0) {
+                            std::cout << "  iter=" << std::setw(6) << iter
+                                      << "  dt=" << std::scientific
+                                      << std::setprecision(4) << dt
+                                      << "  res_rho=" << res.rho
+                                      << "  T_max=" << std::fixed
+                                      << std::setprecision(4) << mon.T_max
+                                      << "\n";
+                        }
+                    }
+                }
+            } // end RK stage loop
+
+            if (converged) break;
+
+            // ============================================================
+            // 8. Solution output (step-based or time-based)
+            // ============================================================
+            bool step_output = (cfg.output_freq > 0 &&
+                                iter % cfg.output_freq == 0);
+            bool time_output = (cfg.output_time_interval > 0.0 &&
+                                time - last_output_time >=
+                                    cfg.output_time_interval - 1.0e-12);
+
+            if (step_output || time_output) {
+                if (ParallelEnv::is_master()) {
+                    std::cout << "Writing solution at iter=" << iter
+                              << ", time=" << time << "\n";
+                }
+                SolutionWriter::write(blocks, cfg, iter, time);
+                if (time_output) last_output_time = time;
             }
-        }
 
-        // ---- Inviscid RHS test ----
+            // ============================================================
+            // 9. Restart output
+            // ============================================================
+            if (cfg.restart_freq > 0 && iter % cfg.restart_freq == 0) {
+                if (ParallelEnv::is_master()) {
+                    std::cout << "Writing restart at iter=" << iter
+                              << ", time=" << time << "\n";
+                }
+                RestartWriter::write(blocks, cfg, iter, time);
+            }
+
+        } // end main time loop
+
+        // ================================================================
+        // 10. Final output
+        // ================================================================
         if (ParallelEnv::is_master()) {
-            std::cout << "\n--- Inviscid RHS Test ---\n";
+            std::cout << "\n========== Time Loop Finished ==========\n"
+                      << "  Iterations: " << (iter > cfg.max_iter ? cfg.max_iter : iter) << "\n"
+                      << "  Final time: " << time << "\n"
+                      << "  Converged:  " << (converged ? "yes" : "no") << "\n"
+                      << "=========================================\n";
         }
-        {
-            auto interp = WcnsInterpBase::create(cfg);
-            auto riemann = RiemannSolverBase::create(cfg);
 
-            // Step 1: Interpolation + Riemann solver for all blocks
-            for (auto& lb : local_blocks) {
-                interp->interp_xi(lb, cfg);
-                interp->interp_eta(lb, cfg);
-                interp->interp_zeta(lb, cfg);
+        // Final solution and restart write
+        SolutionWriter::write(blocks, cfg, iter, time);
+        RestartWriter::write(blocks, cfg, iter, time);
 
-                riemann->solve_xi(lb, cfg);
-                riemann->solve_eta(lb, cfg);
-                riemann->solve_zeta(lb, cfg);
-            }
-
-            // Step 2: Exchange face fluxes at connectivity boundaries
-            pm.exchange_flux_halos(local_blocks);
-
-            // Step 3: Compute inviscid RHS for all blocks
-            for (auto& lb : local_blocks) {
-                Int nci = lb.field.ni();
-                Int ncj = lb.field.nj();
-                Int nck = lb.field.nk();
-
-                // Compute inviscid RHS
-                InviscidRHS::compute(lb);
-
-                // ---- Verify: uniform flow → RHS ≡ 0 ----
-                Int i0 = 3, i1 = nci - 4;
-                Int j0 = 3, j1 = ncj - 4;
-                Int k0 = 3, k1 = nck - 4;
-
-                Real max_rhs = 0.0, max_rhs_far = 0.0;
-                bool has_nan = false, has_inf = false;
-
-                // far-field region: away from walls (j in middle third)
-                Int jf0 = ncj / 3, jf1 = 2 * ncj / 3;
-
-                for (Int k = k0; k <= k1; ++k) {
-                for (Int j = j0; j <= j1; ++j) {
-                for (Int i = i0; i <= i1; ++i) {
-                    Real v = std::abs(lb.field.rhs.rho(i,j,k));
-                    if (std::isnan(lb.field.rhs.rho(i,j,k))) has_nan = true;
-                    if (std::isinf(lb.field.rhs.rho(i,j,k))) has_inf = true;
-                    max_rhs = std::max(max_rhs, v);
-                    if (j >= jf0 && j <= jf1) max_rhs_far = std::max(max_rhs_far, v);
-
-                    v = std::abs(lb.field.rhs.rhou(i,j,k));
-                    if (std::isnan(lb.field.rhs.rhou(i,j,k))) has_nan = true;
-                    if (std::isinf(lb.field.rhs.rhou(i,j,k))) has_inf = true;
-                    max_rhs = std::max(max_rhs, v);
-                    if (j >= jf0 && j <= jf1) max_rhs_far = std::max(max_rhs_far, v);
-
-                    v = std::abs(lb.field.rhs.rhov(i,j,k));
-                    if (std::isnan(lb.field.rhs.rhov(i,j,k))) has_nan = true;
-                    if (std::isinf(lb.field.rhs.rhov(i,j,k))) has_inf = true;
-                    max_rhs = std::max(max_rhs, v);
-                    if (j >= jf0 && j <= jf1) max_rhs_far = std::max(max_rhs_far, v);
-
-                    v = std::abs(lb.field.rhs.rhow(i,j,k));
-                    if (std::isnan(lb.field.rhs.rhow(i,j,k))) has_nan = true;
-                    if (std::isinf(lb.field.rhs.rhow(i,j,k))) has_inf = true;
-                    max_rhs = std::max(max_rhs, v);
-                    if (j >= jf0 && j <= jf1) max_rhs_far = std::max(max_rhs_far, v);
-
-                    v = std::abs(lb.field.rhs.rhoE(i,j,k));
-                    if (std::isnan(lb.field.rhs.rhoE(i,j,k))) has_nan = true;
-                    if (std::isinf(lb.field.rhs.rhoE(i,j,k))) has_inf = true;
-                    max_rhs = std::max(max_rhs, v);
-                    if (j >= jf0 && j <= jf1) max_rhs_far = std::max(max_rhs_far, v);
-
-                }}}
-
-
-                std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                          << " Inviscid RHS max |value|: "
-                          << max_rhs << " (all interior)"
-                          << " | far-field: " << max_rhs_far
-                          << " | NaN=" << (has_nan ? "YES!" : "no")
-                          << " Inf=" << (has_inf ? "YES!" : "no")
-                          << "\n";
-
-                // Spot-check interior cell values
-                Int ci = 4, cj = 4, ck = 4;
-                std::cout << "[Rank " << ParallelEnv::rank() << "] Block " << lb.block_id
-                          << " Spot cell(" << ci << "," << cj << "," << ck
-                          << "): rhs.rho=" << lb.field.rhs.rho(ci,cj,ck)
-                          << " rhs.rhou=" << lb.field.rhs.rhou(ci,cj,ck)
-                          << " rhs.rhoE=" << lb.field.rhs.rhoE(ci,cj,ck)
-                          << "\n";
-            }
+        // Close residual log
+        if (res_file.is_open()) {
+            res_file.close();
         }
 
     } catch (const std::exception& e) {
-        std::cerr << "Error [Rank " << ParallelEnv::rank() << "]: " << e.what() << "\n";
+        std::cerr << "Error [Rank " << ParallelEnv::rank() << "]: "
+                  << e.what() << "\n";
         ParallelEnv::finalize();
         return 1;
     }

@@ -467,3 +467,100 @@ inline void FluxHaloExchange::exchange(LocalBlock& block,
         }
     }
 }
+
+// ============================================================================
+// exchange_face_arrays — single-component face arrays, one direction, MPI only
+// ============================================================================
+
+inline void FluxHaloExchange::exchange_face_arrays(
+        std::vector<MultiArray3D<Real>*>& face_arrs, int dir,
+        const LocalBlock& block) {
+
+    if (face_arrs.empty()) return;
+
+    MPI_Comm comm = MPI_COMM_WORLD;
+    Int n_arrs = static_cast<Int>(face_arrs.size());
+
+    for (int face = 0; face < 6; ++face) {
+        // Only process faces matching the given direction
+        if (face / 2 != dir) continue;
+
+        FluxFaceInfo& info = faces_[face];
+        if (!info.active) continue;
+
+        // Only handle remote (MPI) exchange; local copy is caller's responsibility
+        if (!info.is_remote) continue;
+
+        Int n_faces = info.n_faces;
+        Int dim1    = info.dim1;
+        Int dim2    = info.dim2;
+        Int s0      = info.send_begin;
+        Int r0      = info.recv_begin;
+
+        // Single component size: n_faces × dim1 × dim2
+        Int comp_sz = n_faces * dim1 * dim2;
+        Int total_sz = n_arrs * comp_sz;
+
+        // Resize buffers if needed
+        if (static_cast<Int>(info.send_buf.size()) < total_sz) {
+            info.send_buf.resize(total_sz);
+            info.recv_buf.resize(total_sz);
+        }
+
+        // ---- Pack all arrays sequentially into send buffer ----
+        Real* buf = info.send_buf.data();
+        for (Int n = 0; n < n_arrs; ++n) {
+            const MultiArray3D<Real>& arr = *face_arrs[n];
+            Real* comp_buf = buf + n * comp_sz;
+
+            for (Int d = 0; d < n_faces; ++d) {
+                Int face_idx = s0 + d;
+                for (Int b = 0; b < dim2; ++b) {
+                for (Int a = 0; a < dim1; ++a) {
+                    Int buf_idx = d * dim1 * dim2 + a + dim1 * b;
+                    Real val = 0.0;
+                    switch (dir) {
+                    case 0: val = arr(face_idx, a, b); break;
+                    case 1: val = arr(a, face_idx, b); break;
+                    case 2: val = arr(a, b, face_idx); break;
+                    }
+                    comp_buf[buf_idx] = val;
+                }}
+            }
+        }
+
+        // ---- MPI exchange ----
+        int tag = std::min(block.block_id, info.target_block) * 100
+                + face * 10 + dir + 300;  // +300 offset for face-array exchange
+
+        MPI_Request sreq, rreq;
+        MPI_Isend(info.send_buf.data(), total_sz, MPI_DOUBLE,
+                  info.target_rank, tag, comm, &sreq);
+        MPI_Irecv(info.recv_buf.data(), total_sz, MPI_DOUBLE,
+                  info.target_rank, tag, comm, &rreq);
+
+        MPI_Wait(&sreq, MPI_STATUS_IGNORE);
+        MPI_Wait(&rreq, MPI_STATUS_IGNORE);
+
+        // ---- Unpack into all arrays ----
+        const Real* recv = info.recv_buf.data();
+        for (Int n = 0; n < n_arrs; ++n) {
+            MultiArray3D<Real>& arr = *face_arrs[n];
+            const Real* comp_buf = recv + n * comp_sz;
+
+            for (Int d = 0; d < n_faces; ++d) {
+                Int face_idx = r0 + d;
+                for (Int b = 0; b < dim2; ++b) {
+                for (Int a = 0; a < dim1; ++a) {
+                    Int buf_idx = d * dim1 * dim2 + a + dim1 * b;
+                    Real val = comp_buf[buf_idx];
+                    switch (dir) {
+                    case 0: arr(face_idx, a, b) = val; break;
+                    case 1: arr(a, face_idx, b) = val; break;
+                    case 2: arr(a, b, face_idx) = val; break;
+                    }
+                }}
+            }
+        }
+    }
+}

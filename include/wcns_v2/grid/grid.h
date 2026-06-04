@@ -53,7 +53,7 @@ public:
     MultiArray3D<Real> met_eta_x, met_eta_y, met_eta_z;
     MultiArray3D<Real> met_zeta_x, met_zeta_y, met_zeta_z;
 
-    // ---- Jacobian (1/J) at cell centers (nci x ncj x nck) ----
+    // ---- Jacobian (J, cell volume) at cell centers (nci x ncj x nck) ----
     MultiArray3D<Real> jacobian;
 
     // ---- Face metric coefficients (primary normal-direction on each face) ----

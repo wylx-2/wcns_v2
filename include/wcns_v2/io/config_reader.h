@@ -12,10 +12,11 @@
 /// Expected sections:
 ///   [physical]       — gamma, prandtl, reynolds, mach, aoa, beta
 ///   [reference]      — length, rho, temp, gas_constant
-///   [control]        — cfl, max_iter, output_freq, restart_freq, time_scheme,
-///                       converge_tol, ng
+///   [control]        — cfl, max_iter, max_time, output_freq, restart_freq,
+///                       time_scheme, converge_tol, ng
 ///   [initialization] — init_type, poiseuille_umax, poiseuille_y_min,
 ///                       poiseuille_y_max, body_force_x/y/z, wall_type
+///   [output]         — output_format, output_dir, output_time_interval
 ///
 /// All values have sensible defaults; only non-default values need to be
 /// specified in the config file.
@@ -57,4 +58,8 @@ private:
     /// Populate the initialization section from a key/value pair.
     static void set_initialization(Config& cfg, const std::string& key,
                                     const std::string& value);
+
+    /// Populate the output section from a key/value pair.
+    static void set_output(Config& cfg, const std::string& key,
+                            const std::string& value);
 };

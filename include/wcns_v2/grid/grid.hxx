@@ -720,7 +720,7 @@ inline void Grid::compute_metrics() {
 
     // ================================================================
     // 8. Compute Jacobian (SCMM form)
-    //    1/J = (1/3) * [ (S_ξ)_ξ + (S_η)_η + (S_ζ)_ζ ]
+    //    J = (1/3) * [ (S_ξ)_ξ + (S_η)_η + (S_ζ)_ζ ]
     //    where S_dir = x·met_dir_x + y·met_dir_y + z·met_dir_z
     // ================================================================
 
@@ -759,11 +759,11 @@ inline void Grid::compute_metrics() {
     for (Int i = 0; i < nci; ++i)
         jacobian(i,j,k) += t_deriv(i,j,k);
 
-    // 1/J = sum/3  →  J = 3/sum
+    // J = sum/3  (sum = (S_ξ)_ξ + (S_η)_η + (S_ζ)_ζ = 3J)
     for (Int k = 0; k < nck; ++k)
     for (Int j = 0; j < ncj; ++j)
     for (Int i = 0; i < nci; ++i)
-        jacobian(i,j,k) = 3.0 / jacobian(i,j,k);
+        jacobian(i,j,k) = jacobian(i,j,k) / 3.0;
 
     std::cout << "  SCMM metrics computed: 9 terms + Jacobian at cell centers\n";
 }

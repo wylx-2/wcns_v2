@@ -56,6 +56,26 @@ public:
                                 int dir, Int ng,
                                 const bool face_is_periodic[6]);
 
+    /// Compute cell-center derivative directly from pre-computed half-node values.
+    ///
+    /// Unlike derivative() which takes cell-center input and internally
+    /// interpolates to half-nodes first, this method consumes face arrays
+    /// directly — only the diff_line step is performed.  This avoids redundant
+    /// interpolation when face values are already available (e.g. after
+    /// multiplying interpolated face variables with face metric coefficients).
+    ///
+    /// @param af    Input face array.  Size depends on @p dir :
+    ///              dir=0 → (ni+1)×nj×nk,  dir=1 → ni×(nj+1)×nk,
+    ///              dir=2 → ni×nj×(nk+1)
+    /// @param da    Output derivative array (ni×nj×nk), must be pre-allocated
+    /// @param dir   Direction: 0 = ξ(i), 1 = η(j), 2 = ζ(k)
+    /// @param dh    Grid spacing in computational space (Δξ, Δη, or Δζ)
+    /// @param face_is_periodic  [IMIN,IMAX,JMIN,JMAX,KMIN,KMAX]
+    static void derivative_from_faces(const MultiArray3D<Real>& af,
+                                       MultiArray3D<Real>& da,
+                                       int dir, Real dh,
+                                       const bool face_is_periodic[6]);
+
 private:
     // ========================================================================
     // 1D interpolation to half-nodes  (cell center → i+1/2)

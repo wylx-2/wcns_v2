@@ -77,6 +77,13 @@ inline void Field::allocate(Int nci, Int ncj, Int nck) {
     prim.allocate(nci, ncj, nck);
     cons.allocate(nci, ncj, nck);
     rhs.allocate(nci, ncj, nck);
+    Q0.allocate(nci, ncj, nck);
+
+    // Velocity and temperature gradients (cell-centered)
+    du_dx.allocate(nci, ncj, nck); du_dy.allocate(nci, ncj, nck); du_dz.allocate(nci, ncj, nck);
+    dv_dx.allocate(nci, ncj, nck); dv_dy.allocate(nci, ncj, nck); dv_dz.allocate(nci, ncj, nck);
+    dw_dx.allocate(nci, ncj, nck); dw_dy.allocate(nci, ncj, nck); dw_dz.allocate(nci, ncj, nck);
+    dT_dx.allocate(nci, ncj, nck); dT_dy.allocate(nci, ncj, nck); dT_dz.allocate(nci, ncj, nck);
 
     // Face fluxes — size depends on face direction
     // ξ-face (i+1/2): (nci+1) × ncj × nck
@@ -102,6 +109,30 @@ inline void Field::allocate(Int nci, Int ncj, Int nck) {
     // Interpolated left/right states at ζ-face (k+1/2)
     ql_zeta.allocate(nci, ncj, nck + 1);
     qr_zeta.allocate(nci, ncj, nck + 1);
+
+    // Cell-center Cartesian viscous flux vectors (5c)
+    vis_x.allocate(nci, ncj, nck);
+    vis_y.allocate(nci, ncj, nck);
+    vis_z.allocate(nci, ncj, nck);
+
+    // Face-interpolated physical quantities for viscous flux
+    // ξ-face (i+1/2): (nci+1)×ncj×nck
+    u_face_xi.allocate(nci + 1, ncj, nck);
+    v_face_xi.allocate(nci + 1, ncj, nck);
+    w_face_xi.allocate(nci + 1, ncj, nck);
+    T_face_xi.allocate(nci + 1, ncj, nck);
+
+    // η-face (j+1/2): nci×(ncj+1)×nck
+    u_face_eta.allocate(nci, ncj + 1, nck);
+    v_face_eta.allocate(nci, ncj + 1, nck);
+    w_face_eta.allocate(nci, ncj + 1, nck);
+    T_face_eta.allocate(nci, ncj + 1, nck);
+
+    // ζ-face (k+1/2): nci×ncj×(nck+1)
+    u_face_zeta.allocate(nci, ncj, nck + 1);
+    v_face_zeta.allocate(nci, ncj, nck + 1);
+    w_face_zeta.allocate(nci, ncj, nck + 1);
+    T_face_zeta.allocate(nci, ncj, nck + 1);
 
     allocated_ = true;
 }

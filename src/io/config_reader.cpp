@@ -69,6 +69,8 @@ Config ConfigReader::read(const std::string& filename) {
             set_scheme(cfg, key_lower, value);
         } else if (section == "initialization") {
             set_initialization(cfg, key_lower, value);
+        } else if (section == "output") {
+            set_output(cfg, key_lower, value);
         } else {
             std::cerr << "ConfigReader: warning: unknown section \"[" << section
                       << "]\" at line " << line_no << ", ignoring\n";
@@ -171,12 +173,16 @@ void ConfigReader::set_control(Config& cfg, const std::string& key,
         cfg.cfl = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "fixed_dt") {
         cfg.fixed_dt = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "max_time") {
+        cfg.max_time = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "max_iter") {
         cfg.max_iter = static_cast<Int>(std::atoi(value.c_str()));
     } else if (key == "output_freq") {
         cfg.output_freq = static_cast<Int>(std::atoi(value.c_str()));
     } else if (key == "restart_freq") {
         cfg.restart_freq = static_cast<Int>(std::atoi(value.c_str()));
+    } else if (key == "residual_freq") {
+        cfg.residual_freq = static_cast<Int>(std::atoi(value.c_str()));
     } else if (key == "converge_tol") {
         cfg.converge_tol = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "time_scheme") {
@@ -205,6 +211,12 @@ void ConfigReader::set_scheme(Config& cfg, const std::string& key,
         cfg.riemann_type = value;
     } else if (key == "entropy_fix_eps") {
         cfg.entropy_fix_eps = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "viscous_type") {
+        cfg.viscous_type = value;
+    } else if (key == "mu_const") {
+        cfg.mu_const = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "sutherland_s") {
+        cfg.sutherland_S = static_cast<Real>(std::atof(value.c_str()));
     } else {
         std::cerr << "ConfigReader: warning: unknown key \""
                   << key << "\" in [scheme] section\n";
@@ -221,6 +233,8 @@ void ConfigReader::set_initialization(Config& cfg, const std::string& key,
         cfg.poiseuille_y_min = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "poiseuille_y_max") {
         cfg.poiseuille_y_max = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "body_force_type") {
+        cfg.body_force_type = value;
     } else if (key == "body_force_x") {
         cfg.body_force_x = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "body_force_y") {
@@ -232,5 +246,19 @@ void ConfigReader::set_initialization(Config& cfg, const std::string& key,
     } else {
         std::cerr << "ConfigReader: warning: unknown key \""
                   << key << "\" in [initialization] section\n";
+    }
+}
+
+void ConfigReader::set_output(Config& cfg, const std::string& key,
+                               const std::string& value) {
+    if (key == "output_format") {
+        cfg.output_format = value;
+    } else if (key == "output_dir") {
+        cfg.output_dir = value;
+    } else if (key == "output_time_interval") {
+        cfg.output_time_interval = static_cast<Real>(std::atof(value.c_str()));
+    } else {
+        std::cerr << "ConfigReader: warning: unknown key \""
+                  << key << "\" in [output] section\n";
     }
 }

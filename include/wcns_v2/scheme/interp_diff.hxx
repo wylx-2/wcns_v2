@@ -319,3 +319,61 @@ inline void InterpDiff::interp_to_faces(const MultiArray3D<Real>& a,
         }}
     }
 }
+
+// ============================================================================
+// derivative_from_faces — 3D diff from pre-computed face values
+// ============================================================================
+
+inline void InterpDiff::derivative_from_faces(const MultiArray3D<Real>& af,
+                                               MultiArray3D<Real>& da,
+                                               int dir, Real dh,
+                                               const bool face_is_periodic[6]) {
+    // af is already a face array (half-node values).  We only need diff_line.
+    // For dir=0: af is (ni+1, nj, nk) → da is (ni, nj, nk)
+    // For dir=1: af is (ni, nj+1, nk) → da is (ni, nj, nk)
+    // For dir=2: af is (ni, nj, nk+1) → da is (ni, nj, nk)
+
+    Int ni = da.ni(), nj = da.nj(), nk = da.nk();
+
+    if (dir == 0) {
+        // ξ direction: af has ni+1 faces (i+1/2), da has ni cells
+        bool lp = face_is_periodic[0];  // IMIN
+        bool rp = face_is_periodic[1];  // IMAX
+
+        for (Int k = 0; k < nk; ++k) {
+        for (Int j = 0; j < nj; ++j) {
+            const Real* af_line = &af(0, j, k);
+            Real*       da_line = &da(0, j, k);
+
+            diff_line(af_line, da_line, ni, dh, lp, rp);
+        }}
+    } else if (dir == 1) {
+        // η direction: af has nj+1 faces (j+1/2), da has nj cells
+        bool lp = face_is_periodic[2];  // JMIN
+        bool rp = face_is_periodic[3];  // JMAX
+
+        for (Int k = 0; k < nk; ++k) {
+        for (Int i = 0; i < ni; ++i) {
+            std::vector<Real> af_line(nj + 1), da_line_buf(nj);
+            for (Int j = 0; j < nj + 1; ++j) af_line[j] = af(i, j, k);
+
+            diff_line(af_line.data(), da_line_buf.data(), nj, dh, lp, rp);
+
+            for (Int j = 0; j < nj; ++j) da(i, j, k) = da_line_buf[j];
+        }}
+    } else {
+        // ζ direction: af has nk+1 faces (k+1/2), da has nk cells
+        bool lp = face_is_periodic[4];  // KMIN
+        bool rp = face_is_periodic[5];  // KMAX
+
+        for (Int j = 0; j < nj; ++j) {
+        for (Int i = 0; i < ni; ++i) {
+            std::vector<Real> af_line(nk + 1), da_line_buf(nk);
+            for (Int k = 0; k < nk + 1; ++k) af_line[k] = af(i, j, k);
+
+            diff_line(af_line.data(), da_line_buf.data(), nk, dh, lp, rp);
+
+            for (Int k = 0; k < nk; ++k) da(i, j, k) = da_line_buf[k];
+        }}
+    }
+}

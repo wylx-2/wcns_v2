@@ -44,6 +44,18 @@ public:
     /// 6-point centered difference in InviscidRHS.
     void exchange_flux_halos(std::vector<LocalBlock>& blocks);
 
+    /// Access the FluxHaloExchange object for a given local block index.
+    /// Used by ViscidRHS for face-product exchange.
+    FluxHaloExchange& flux_halo_ex(Int idx);
+
+    /// Exchange velocity/temperature gradient ghost cells for all local blocks.
+    /// Exchanges the 12 gradient arrays (du_dx, du_dy, ..., dT_dz) stored in Field.
+    void exchange_gradient_halos(std::vector<LocalBlock>& blocks);
+
+    /// Exchange cell-center viscous flux ghost cells for all local blocks.
+    /// Exchanges vis_x, vis_y, vis_z (15 arrays total) stored in Field.
+    void exchange_viscous_flux_halos(std::vector<LocalBlock>& blocks);
+
     // ========================================================================
     // Global reductions (for convergence checks, CFL computation, etc.)
     // ========================================================================

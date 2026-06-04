@@ -58,6 +58,20 @@ public:
     /// @param all_blocks   All local blocks on this process (for same-process copy)
     void exchange(LocalBlock& block, const std::vector<LocalBlock>& all_blocks);
 
+    /// Exchange an arbitrary set of single-component face arrays in one direction.
+    ///
+    /// All arrays in @p face_arrs must have the same dimensions (matching the
+    /// face direction) and are packed into a single MPI buffer for efficiency.
+    /// Only handles MPI-remote neighbors; same-process local copy must be done
+    /// separately by the caller (the arrays are typically temporaries not
+    /// accessible via Field/Grid).
+    ///
+    /// @param face_arrs    Vector of face arrays to exchange (all in the same dir)
+    /// @param dir          Direction: 0=ξ, 1=η, 2=ζ
+    /// @param block        The local block
+    void exchange_face_arrays(std::vector<MultiArray3D<Real>*>& face_arrs,
+                              int dir, const LocalBlock& block);
+
 private:
     /// Per-face exchange descriptor for one connectivity boundary.
     struct FluxFaceInfo {

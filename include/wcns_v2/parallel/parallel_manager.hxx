@@ -192,6 +192,51 @@ inline void ParallelManager::exchange_flux_halos(std::vector<LocalBlock>& blocks
 }
 
 // ============================================================================
+// Access flux halo exchange objects
+// ============================================================================
+
+inline FluxHaloExchange& ParallelManager::flux_halo_ex(Int idx) {
+    return flux_halo_ex_[static_cast<std::size_t>(idx)];
+}
+
+// ============================================================================
+// Exchange gradient halos
+// ============================================================================
+
+inline void ParallelManager::exchange_gradient_halos(std::vector<LocalBlock>& blocks) {
+    for (std::size_t i = 0; i < blocks.size(); ++i) {
+        std::vector<MultiArray3D<Real>*> arrays = {
+            &blocks[i].field.du_dx, &blocks[i].field.du_dy, &blocks[i].field.du_dz,
+            &blocks[i].field.dv_dx, &blocks[i].field.dv_dy, &blocks[i].field.dv_dz,
+            &blocks[i].field.dw_dx, &blocks[i].field.dw_dy, &blocks[i].field.dw_dz,
+            &blocks[i].field.dT_dx, &blocks[i].field.dT_dy, &blocks[i].field.dT_dz
+        };
+        halo_ex_[i].exchange_multi(arrays, blocks[i]);
+    }
+}
+
+// ============================================================================
+// Exchange viscous flux halos
+// ============================================================================
+
+inline void ParallelManager::exchange_viscous_flux_halos(std::vector<LocalBlock>& blocks) {
+    for (std::size_t i = 0; i < blocks.size(); ++i) {
+        std::vector<MultiArray3D<Real>*> arrays = {
+            &blocks[i].field.vis_x.f1, &blocks[i].field.vis_x.f2,
+            &blocks[i].field.vis_x.f3, &blocks[i].field.vis_x.f4,
+            &blocks[i].field.vis_x.f5,
+            &blocks[i].field.vis_y.f1, &blocks[i].field.vis_y.f2,
+            &blocks[i].field.vis_y.f3, &blocks[i].field.vis_y.f4,
+            &blocks[i].field.vis_y.f5,
+            &blocks[i].field.vis_z.f1, &blocks[i].field.vis_z.f2,
+            &blocks[i].field.vis_z.f3, &blocks[i].field.vis_z.f4,
+            &blocks[i].field.vis_z.f5
+        };
+        halo_ex_[i].exchange_multi(arrays, blocks[i]);
+    }
+}
+
+// ============================================================================
 // Global reductions
 // ============================================================================
 

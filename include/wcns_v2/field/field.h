@@ -99,8 +99,41 @@ public:
     FluxVars vis_eta;            ///< Viscous flux through η-face (j+1/2)
     FluxVars vis_zeta;           ///< Viscous flux through ζ-face (k+1/2)
 
+    // ---- Cell-center Cartesian viscous flux vectors (5c output) ----
+    // F_vis (x-direction), G_vis (y-direction), H_vis (z-direction)
+    // Each is a FluxVars (f1..f5) at cell centers (nci×ncj×nck).
+    // f1 (density flux) ≡ 0 for viscous terms.
+    // These are interpolated to faces in 5d to assemble vis_xi/eta/zeta.
+    FluxVars vis_x;              ///< F_vis — Cartesian x-direction viscous flux
+    FluxVars vis_y;              ///< G_vis — Cartesian y-direction viscous flux
+    FluxVars vis_z;              ///< H_vis — Cartesian z-direction viscous flux
+
+    // ---- Face-interpolated physical quantities (for viscous flux chain rule) ----
+    // ξ-face (i+1/2): size (nci+1)×ncj×nck
+    MultiArray3D<Real> u_face_xi, v_face_xi, w_face_xi, T_face_xi;
+    // η-face (j+1/2): size nci×(ncj+1)×nck
+    MultiArray3D<Real> u_face_eta, v_face_eta, w_face_eta, T_face_eta;
+    // ζ-face (k+1/2): size nci×ncj×(nck+1)
+    MultiArray3D<Real> u_face_zeta, v_face_zeta, w_face_zeta, T_face_zeta;
+
+    // ---- Velocity and temperature gradients (for viscous flux, cell-center) ----
+    MultiArray3D<Real> du_dx, du_dy, du_dz;
+    MultiArray3D<Real> dv_dx, dv_dy, dv_dz;
+    MultiArray3D<Real> dw_dx, dw_dy, dw_dz;
+    MultiArray3D<Real> dT_dx, dT_dy, dT_dz;
+
+    // ---- 5d temporary: face-interpolated Cartesian viscous flux components ----
+    // Allocated per direction by interp_cart_flux_to_faces, freed after assembly.
+    // Peak memory ~12 face arrays for the current direction.
+    MultiArray3D<Real> vis_x_f2_face, vis_x_f3_face, vis_x_f4_face, vis_x_f5_face;
+    MultiArray3D<Real> vis_y_f2_face, vis_y_f3_face, vis_y_f4_face, vis_y_f5_face;
+    MultiArray3D<Real> vis_z_f2_face, vis_z_f3_face, vis_z_f4_face, vis_z_f5_face;
+
     // ---- Conservative variable right-hand side (for time stepping) ----
-    ConservativeVars rhs;        ///< RHS (dQ/dt) in conservative form
+    ConservativeVars rhs;        ///< RHS ∂(Q/J)/∂t = -(∂F̂/∂ξ+∂Ĝ/∂η+∂Ĥ/∂ζ) in conservative form
+
+    // ---- Initial conservative state snapshot (for RK multi-stage) ----
+    ConservativeVars Q0;         ///< Q^(0) — conserved state at the start of each time step
 
     // ========================================================================
     // Allocation
