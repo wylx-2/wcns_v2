@@ -243,6 +243,12 @@ void ConfigReader::set_initialization(Config& cfg, const std::string& key,
         cfg.body_force_z = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "wall_type") {
         cfg.wall_type = value;
+    } else if (key == "riemann_config") {
+        cfg.riemann_config = static_cast<Int>(std::atoi(value.c_str()));
+    } else if (key == "riemann_x_split") {
+        cfg.riemann_x_split = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "riemann_y_split") {
+        cfg.riemann_y_split = static_cast<Real>(std::atof(value.c_str()));
     } else {
         std::cerr << "ConfigReader: warning: unknown key \""
                   << key << "\" in [initialization] section\n";

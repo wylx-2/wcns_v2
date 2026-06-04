@@ -23,6 +23,11 @@ public:
     /// The velocity profile is oriented along the direction of the body force.
     static void init_poiseuille(LocalBlock& lb, const Config& cfg);
 
+    /// 2D Riemann problem: 4-quadrant discontinuous initial states.
+    /// Each quadrant has uniform (rho, u, v, p). The configuration is selected
+    /// by cfg.riemann_config (default 3).  Split at cfg.riemann_x/y_split.
+    static void init_riemann_2d(LocalBlock& lb, const Config& cfg);
+
 private:
     /// Get the interior cell loop range (inclusive).
     /// Interior cells are at [ng, ng + nci_core - 1] etc.

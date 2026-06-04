@@ -64,7 +64,6 @@ inline void TimeIntegrator::advance_stage(LocalBlock& lb, const Config& cfg,
     rk_coeffs(cfg, stage, alpha, beta);
 
     auto& f     = lb.field;
-    auto& J     = lb.grid.jacobian;
     const Int nci = f.ni();
     const Int ncj = f.nj();
     const Int nck = f.nk();
@@ -74,25 +73,22 @@ inline void TimeIntegrator::advance_stage(LocalBlock& lb, const Config& cfg,
     const Int j0 = 3, j1 = ncj - 4;
     const Int k0 = 3, k1 = nck - 4;
 
-    // Q_new = alpha * Q0 + beta * (Q_old + dt * J * rhs)
-    //   where J⁻¹·∂Q/∂t = rhs  (SCMM scaled equation)
-    //   ⇒   ∂Q/∂t = J * rhs    (= physical time derivative)
+    // Q_new = alpha * Q0 + beta * (Q_old + dt * rhs)
+    //   where rhs = ∂Q/∂t = -(∂F̃/∂ξ + ∂G̃/∂η + ∂H̃/∂ζ) / J
+    //   (SCMM: J·∂Q/∂t + ∂F̃/∂ξ + ... = 0 ⇒ ∂Q/∂t = -(∂F̃/∂ξ + ...)/J)
     for (Int k = k0; k <= k1; ++k) {
     for (Int j = j0; j <= j1; ++j) {
     for (Int i = i0; i <= i1; ++i) {
-        // J * dt: Jacobian converts SCMM-scaled RHS to physical dQ/dt
-        Real dt_J = dt * J(i,j,k);
-
         // Stage updates for each conservative component
         f.cons.rho(i,j,k)  = alpha * Q0.rho(i,j,k)
-            + beta * (f.cons.rho(i,j,k)  + dt_J * f.rhs.rho(i,j,k));
+            + beta * (f.cons.rho(i,j,k)  + dt * f.rhs.rho(i,j,k));
         f.cons.rhou(i,j,k) = alpha * Q0.rhou(i,j,k)
-            + beta * (f.cons.rhou(i,j,k) + dt_J * f.rhs.rhou(i,j,k));
+            + beta * (f.cons.rhou(i,j,k) + dt * f.rhs.rhou(i,j,k));
         f.cons.rhov(i,j,k) = alpha * Q0.rhov(i,j,k)
-            + beta * (f.cons.rhov(i,j,k) + dt_J * f.rhs.rhov(i,j,k));
+            + beta * (f.cons.rhov(i,j,k) + dt * f.rhs.rhov(i,j,k));
         f.cons.rhow(i,j,k) = alpha * Q0.rhow(i,j,k)
-            + beta * (f.cons.rhow(i,j,k) + dt_J * f.rhs.rhow(i,j,k));
+            + beta * (f.cons.rhow(i,j,k) + dt * f.rhs.rhow(i,j,k));
         f.cons.rhoE(i,j,k) = alpha * Q0.rhoE(i,j,k)
-            + beta * (f.cons.rhoE(i,j,k) + dt_J * f.rhs.rhoE(i,j,k));
+            + beta * (f.cons.rhoE(i,j,k) + dt * f.rhs.rhoE(i,j,k));
     }}}
 }

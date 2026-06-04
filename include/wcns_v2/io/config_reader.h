@@ -15,7 +15,8 @@
 ///   [control]        — cfl, max_iter, max_time, output_freq, restart_freq,
 ///                       time_scheme, converge_tol, ng
 ///   [initialization] — init_type, poiseuille_umax, poiseuille_y_min,
-///                       poiseuille_y_max, body_force_x/y/z, wall_type
+///                       poiseuille_y_max, body_force_x/y/z, wall_type,
+///                       riemann_config, riemann_x/y_split
 ///   [output]         — output_format, output_dir, output_time_interval
 ///
 /// All values have sensible defaults; only non-default values need to be

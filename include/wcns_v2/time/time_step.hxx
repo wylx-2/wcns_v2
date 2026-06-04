@@ -69,9 +69,10 @@ inline Real TimeStep::compute_block(const LocalBlock& lb, const Config& cfg) {
         Real mu = Real(1.0) / Re;
         Real mu_rho = mu / rho;
 
-        // Cell volume: Ω = |1/J| (for unit computational spacing).
+        // Cell volume in physical space: Ω = |J|.
+        // SCMM Jacobian J IS the cell volume, since Δξ=Δη=Δζ=1.
         // abs() handles reversed coordinate handedness in some zones.
-        Real omega = Real(1.0) / std::abs(lb.grid.jacobian(i, j, k));
+        Real omega = std::abs(lb.grid.jacobian(i, j, k));
 
         // -- ξ direction --
         Real met_xi[3] = {lb.grid.met_xi_x(i, j, k),

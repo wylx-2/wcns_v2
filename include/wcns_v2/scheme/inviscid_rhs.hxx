@@ -40,6 +40,8 @@ inline void InviscidRHS::compute(LocalBlock& lb) {
     for (Int k = k0; k <= k1; ++k) {
     for (Int j = j0; j <= j1; ++j) {
     for (Int i = i0; i <= i1; ++i) {
+        Real inv_J = Real(1.0) / std::abs(lb.grid.jacobian(i, j, k));
+
         // ∂F1/∂ξ
         Real dF1 = c0 * (f.inv_xi.f1(i+1,j,k) - f.inv_xi.f1(i,j,k))
                  + c1 * (f.inv_xi.f1(i+2,j,k) - f.inv_xi.f1(i-1,j,k))
@@ -57,11 +59,11 @@ inline void InviscidRHS::compute(LocalBlock& lb) {
                  + c1 * (f.inv_xi.f5(i+2,j,k) - f.inv_xi.f5(i-1,j,k))
                  + c2 * (f.inv_xi.f5(i+3,j,k) - f.inv_xi.f5(i-2,j,k));
 
-        f.rhs.rho(i,j,k)  -= dF1;
-        f.rhs.rhou(i,j,k) -= dF2;
-        f.rhs.rhov(i,j,k) -= dF3;
-        f.rhs.rhow(i,j,k) -= dF4;
-        f.rhs.rhoE(i,j,k) -= dF5;
+        f.rhs.rho(i,j,k)  -= dF1 * inv_J;
+        f.rhs.rhou(i,j,k) -= dF2 * inv_J;
+        f.rhs.rhov(i,j,k) -= dF3 * inv_J;
+        f.rhs.rhow(i,j,k) -= dF4 * inv_J;
+        f.rhs.rhoE(i,j,k) -= dF5 * inv_J;
     }}}
 
     // ---- η-direction: differentiate inv_eta along j ----
@@ -69,6 +71,8 @@ inline void InviscidRHS::compute(LocalBlock& lb) {
     for (Int k = k0; k <= k1; ++k) {
     for (Int j = j0; j <= j1; ++j) {
     for (Int i = i0; i <= i1; ++i) {
+        Real inv_J = Real(1.0) / std::abs(lb.grid.jacobian(i, j, k));
+
         Real dG1 = c0 * (f.inv_eta.f1(i,j+1,k) - f.inv_eta.f1(i,j,k))
                  + c1 * (f.inv_eta.f1(i,j+2,k) - f.inv_eta.f1(i,j-1,k))
                  + c2 * (f.inv_eta.f1(i,j+3,k) - f.inv_eta.f1(i,j-2,k));
@@ -85,11 +89,11 @@ inline void InviscidRHS::compute(LocalBlock& lb) {
                  + c1 * (f.inv_eta.f5(i,j+2,k) - f.inv_eta.f5(i,j-1,k))
                  + c2 * (f.inv_eta.f5(i,j+3,k) - f.inv_eta.f5(i,j-2,k));
 
-        f.rhs.rho(i,j,k)  -= dG1;
-        f.rhs.rhou(i,j,k) -= dG2;
-        f.rhs.rhov(i,j,k) -= dG3;
-        f.rhs.rhow(i,j,k) -= dG4;
-        f.rhs.rhoE(i,j,k) -= dG5;
+        f.rhs.rho(i,j,k)  -= dG1 * inv_J;
+        f.rhs.rhou(i,j,k) -= dG2 * inv_J;
+        f.rhs.rhov(i,j,k) -= dG3 * inv_J;
+        f.rhs.rhow(i,j,k) -= dG4 * inv_J;
+        f.rhs.rhoE(i,j,k) -= dG5 * inv_J;
     }}}
 
     // ---- ζ-direction: differentiate inv_zeta along k ----
@@ -97,6 +101,8 @@ inline void InviscidRHS::compute(LocalBlock& lb) {
     for (Int k = k0; k <= k1; ++k) {
     for (Int j = j0; j <= j1; ++j) {
     for (Int i = i0; i <= i1; ++i) {
+        Real inv_J = Real(1.0) / std::abs(lb.grid.jacobian(i, j, k));
+
         Real dH1 = c0 * (f.inv_zeta.f1(i,j,k+1) - f.inv_zeta.f1(i,j,k))
                  + c1 * (f.inv_zeta.f1(i,j,k+2) - f.inv_zeta.f1(i,j,k-1))
                  + c2 * (f.inv_zeta.f1(i,j,k+3) - f.inv_zeta.f1(i,j,k-2));
@@ -113,10 +119,10 @@ inline void InviscidRHS::compute(LocalBlock& lb) {
                  + c1 * (f.inv_zeta.f5(i,j,k+2) - f.inv_zeta.f5(i,j,k-1))
                  + c2 * (f.inv_zeta.f5(i,j,k+3) - f.inv_zeta.f5(i,j,k-2));
 
-        f.rhs.rho(i,j,k)  -= dH1;
-        f.rhs.rhou(i,j,k) -= dH2;
-        f.rhs.rhov(i,j,k) -= dH3;
-        f.rhs.rhow(i,j,k) -= dH4;
-        f.rhs.rhoE(i,j,k) -= dH5;
+        f.rhs.rho(i,j,k)  -= dH1 * inv_J;
+        f.rhs.rhou(i,j,k) -= dH2 * inv_J;
+        f.rhs.rhov(i,j,k) -= dH3 * inv_J;
+        f.rhs.rhow(i,j,k) -= dH4 * inv_J;
+        f.rhs.rhoE(i,j,k) -= dH5 * inv_J;
     }}}
 }
