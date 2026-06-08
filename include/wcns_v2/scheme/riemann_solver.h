@@ -19,7 +19,10 @@ class LocalBlock;
 /// where (Sx,Sy,Sz) is the face area vector (not unit normal).
 ///
 /// Supported schemes (controlled by cfg.riemann_type):
-///   - "roe"  — Roe approximate Riemann solver (with entropy fix)
+///   - "roe"     — Roe approximate Riemann solver (with entropy fix)
+///   - "rusanov" — Local Lax-Friedrichs (Rusanov) solver
+///   - "hll"     — Harten-Lax-van Leer two-wave solver
+///   - "hllc"    — HLL with Contact restoration (three-wave solver)
 
 
 /// Abstract base for Riemann solvers.
@@ -77,6 +80,44 @@ private:
                          Real Sx, Real Sy, Real Sz,
                          Real gamma, Real eps,
                          Real flux[5]);
+};
+
+/// Rusanov (Local Lax-Friedrichs) approximate Riemann solver.
+///
+///   F = 0.5*(F_L + F_R) - 0.5*S_max*(Q_R - Q_L)
+///
+/// where S_max = max(|U_L| + c_L*|S|, |U_R| + c_R*|S|) is the
+/// maximum local spectral radius.  Simple and robust, but more
+/// dissipative than Roe or HLLC.
+class RiemannSolverRusanov : public RiemannSolverBase {
+public:
+    void solve_xi(LocalBlock& lb, const Config& cfg) const override;
+    void solve_eta(LocalBlock& lb, const Config& cfg) const override;
+    void solve_zeta(LocalBlock& lb, const Config& cfg) const override;
+};
+
+/// HLL (Harten-Lax-van Leer) approximate Riemann solver.
+///
+/// Two-wave model with estimated fastest left (S_L) and right (S_R)
+/// wave speeds.  Less dissipative than Rusanov but does not resolve
+/// contact discontinuities as sharply as HLLC or Roe.
+class RiemannSolverHLL : public RiemannSolverBase {
+public:
+    void solve_xi(LocalBlock& lb, const Config& cfg) const override;
+    void solve_eta(LocalBlock& lb, const Config& cfg) const override;
+    void solve_zeta(LocalBlock& lb, const Config& cfg) const override;
+};
+
+/// HLLC (Harten-Lax-van Leer with Contact) approximate Riemann solver.
+///
+/// Extends HLL by restoring the intermediate contact wave (three-wave
+/// model: left acoustic, contact, right acoustic).  Resolves contact
+/// discontinuities exactly and is positively conservative.
+class RiemannSolverHLLC : public RiemannSolverBase {
+public:
+    void solve_xi(LocalBlock& lb, const Config& cfg) const override;
+    void solve_eta(LocalBlock& lb, const Config& cfg) const override;
+    void solve_zeta(LocalBlock& lb, const Config& cfg) const override;
 };
 
 #include "riemann_solver.hxx"

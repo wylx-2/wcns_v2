@@ -238,10 +238,22 @@ inline void HaloExchange::exchange_multi(
         Int total_sz  = single_sz * n_arrays;
 
         if (!fb.is_remote) {
-            // Same-process neighbor: ghost data is already correct
-            // from the initial sub-zone extraction (full zone was extended).
-            // For dynamic halo updates during time stepping, a local copy
-            // would be needed here.
+            // Same-process neighbor (e.g., same-block periodic connection).
+            // Copy ghost data from the interior of the source (opposite) face.
+            if (ni.target_face >= 0 && ni.target_face < 6) {
+                // Resize temp buffer if needed (setup() only sized for single_sz,
+                // but here we may pack multiple arrays).
+                Int needed_sz = single_sz * n_arrays;
+                if (static_cast<Int>(fb.send_buf.size()) < needed_sz) {
+                    fb.send_buf.resize(static_cast<std::size_t>(needed_sz));
+                }
+                for (Int a = 0; a < n_arrays; ++a) {
+                    pack_face(*arrays[static_cast<std::size_t>(a)], ni.target_face,
+                              block, fb.send_buf.data(), a * single_sz);
+                    unpack_face(*arrays[static_cast<std::size_t>(a)], face,
+                                block, fb.send_buf.data(), a * single_sz);
+                }
+            }
             continue;
         }
 
@@ -301,8 +313,9 @@ inline void HaloExchange::start_exchange(
         fb.recv_buf.assign(total_sz, 0.0);
 
         if (!fb.is_remote) {
-            // Same-process neighbor: direct copy
-            // For now, skip (ghost data is already correct from initial extraction)
+            // Same-process neighbor: perform direct copy for periodic connections
+            // This is handled by exchange_multi (blocking) — non-blocking
+            // start/wait does not support same-block copy yet.
             continue;
         }
 

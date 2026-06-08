@@ -36,3 +36,9 @@ core.*
 
 # GDB
 .gdb_history
+
+# Input/output data (large binary files)
+input/
+debug.md
+restart_*.bin
+sol_*.plt

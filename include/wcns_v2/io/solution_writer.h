@@ -13,7 +13,7 @@
 /// CGNS and VTK are reserved and throw at runtime.
 ///
 /// Output range: interior cells only [ng .. nci-1-ng], i.e. [3 .. nci-4].
-/// Output variables: cell-center coordinates (x,y,z) + primitive vars (rho,u,v,w,p).
+/// Output variables: cell-center coordinates (x,y,z) + primitive vars (rho,u,v,w,p,T).
 
 // ============================================================================
 // Forward declarations
@@ -45,10 +45,12 @@ public:
     /// Write Tecplot multi-zone solution file.
     ///
     /// @param blocks    All local blocks on this rank
+    /// @param cfg       Configuration (for eos_factor to compute temperature)
     /// @param filename  Full path (e.g. "output/sol_000100.plt")
     /// @param iter      Current iteration (for title annotation)
     /// @param time      Current physical time (for title annotation)
     static void write(const std::vector<LocalBlock>& blocks,
+                      const Config& cfg,
                       const std::string& filename,
                       Int iter, Real time);
 };

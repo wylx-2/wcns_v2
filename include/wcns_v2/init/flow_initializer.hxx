@@ -31,8 +31,14 @@ inline void FlowInitializer::initialize(LocalBlock& lb, const Config& cfg) {
         init_uniform(lb, cfg);
     } else if (cfg.init_type == "poiseuille") {
         init_poiseuille(lb, cfg);
+    } else if (cfg.init_type == "rest") {
+        init_rest(lb, cfg);
     } else if (cfg.init_type == "riemann_2d") {
         init_riemann_2d(lb, cfg);
+    } else if (cfg.init_type == "channel_turbulence") {
+        init_channel_turbulence(lb, cfg);
+    } else if (cfg.init_type == "isentropic_vortex") {
+        init_isentropic_vortex(lb, cfg);
     } else {
         throw std::runtime_error("FlowInitializer: unknown init_type \"" +
                                  cfg.init_type + "\"");
@@ -63,6 +69,28 @@ inline void FlowInitializer::init_uniform(LocalBlock& lb, const Config& cfg) {
         lb.field.prim.u(i,j,k)   = u_inf;
         lb.field.prim.v(i,j,k)   = v_inf;
         lb.field.prim.w(i,j,k)   = w_inf;
+        lb.field.prim.p(i,j,k)   = p_inf;
+    }
+}
+
+// ============================================================================
+// Fluid at rest — zero velocity, uniform density/pressure
+// ============================================================================
+
+inline void FlowInitializer::init_rest(LocalBlock& lb, const Config& cfg) {
+    Int i0, i1, j0, j1, k0, k1;
+    interior_range(lb, i0, i1, j0, j1, k0, k1);
+
+    // Non-dimensional free-stream pressure
+    Real p_inf = 1.0 / (cfg.gamma * cfg.Mach * cfg.Mach);
+
+    for (Int k = k0; k <= k1; ++k)
+    for (Int j = j0; j <= j1; ++j)
+    for (Int i = i0; i <= i1; ++i) {
+        lb.field.prim.rho(i,j,k) = 1.0;
+        lb.field.prim.u(i,j,k)   = 0.0;
+        lb.field.prim.v(i,j,k)   = 0.0;
+        lb.field.prim.w(i,j,k)   = 0.0;
         lb.field.prim.p(i,j,k)   = p_inf;
     }
 }
@@ -141,9 +169,9 @@ inline void FlowInitializer::init_poiseuille(LocalBlock& lb, const Config& cfg) 
 //   a complex interaction with a Mach stem at late time.
 //
 //         NW           NE
-//   ρ=1.5           ρ=0.5323
-//   u=0, v=0        u=1.206, v=0
-//   p=1.5           p=0.3
+//   ρ=0.5323       ρ=1.5
+//   u=1.206, v=0   u=0, v=0
+//   p=0.3          p=1.5
 //         SW           SE
 //   ρ=0.138         ρ=0.5323
 //   u=1.206, v=1.206 u=0, v=1.206
@@ -185,9 +213,9 @@ inline void FlowInitializer::init_riemann_2d(LocalBlock& lb, const Config& cfg) 
     } else {
         // Configuration 3 (default)
         // NW (x<xs, y>ys)
-        q[0][0]=1.5;     q[0][1]=0.0;    q[0][2]=0.0;    q[0][3]=1.5;
+        q[0][0]=0.5323;  q[0][1]=1.206;  q[0][2]=0.0;    q[0][3]=0.3;
         // NE (x>xs, y>ys)
-        q[1][0]=0.5323;  q[1][1]=1.206;  q[1][2]=0.0;    q[1][3]=0.3;
+        q[1][0]=1.5;     q[1][1]=0.0;    q[1][2]=0.0;    q[1][3]=1.5;
         // SW (x<xs, y<ys)
         q[2][0]=0.138;   q[2][1]=1.206;  q[2][2]=1.206;  q[2][3]=0.029;
         // SE (x>xs, y<ys)
@@ -209,5 +237,170 @@ inline void FlowInitializer::init_riemann_2d(LocalBlock& lb, const Config& cfg) 
         lb.field.prim.v(i,j,k)   = q[quad][2];
         lb.field.prim.w(i,j,k)   = 0.0;  // 2D: w = 0
         lb.field.prim.p(i,j,k)   = q[quad][3];
+    }
+}
+
+// ============================================================================
+// Channel turbulence — Spalding wall-law mean profile + sinusoidal perturbations
+// ============================================================================
+//
+// Domain: [0, 2π] × [-1, 1] × [0, π].
+//
+// Mean velocity profile follows Spalding's law of the wall, which smoothly
+// blends the viscous sublayer, buffer layer, and log region into a single
+// continuous function of y+:
+//
+//   u⁺(y⁺) = (1/κ)·ln(1 + κ·y⁺) + B·(1 − e^(−y⁺/11) − (y⁺/11)·e^(−y⁺/3))
+//
+// with κ = 0.41 (von Kármán), B = 7.8.
+//
+// Turbulent fluctuations are superimposed as sinusoidal perturbations on all
+// three velocity components.  The perturbation amplitude is 10% of the local
+// mean velocity.
+//
+// Re (in the config) is interpreted as the friction Reynolds number Re_tau.
+// With mu_const = 1, this gives ν* = 1/Re_tau, and u_tau = sqrt(ν·Re_tau) = 1.
+// The corresponding driving body force is f_x = u_tau² / h = 1.
+
+inline void FlowInitializer::init_channel_turbulence(LocalBlock& lb, const Config& cfg) {
+    Int i0, i1, j0, j1, k0, k1;
+    interior_range(lb, i0, i1, j0, j1, k0, k1);
+
+    const Real Re_tau = cfg.Re;     // friction Reynolds number
+    const Real kappa  = 0.41;       // von Kármán constant
+    const Real B      = 7.8;        // Spalding constant
+
+    // Non-dimensional pressure from EOS
+    const Real p_inf = 1.0 / (cfg.gamma * cfg.Mach * cfg.Mach);
+
+    for (Int k = k0; k <= k1; ++k)
+    for (Int j = j0; j <= j1; ++j)
+    for (Int i = i0; i <= i1; ++i) {
+        Real x = lb.grid.cell_x(i,j,k);
+        Real y = lb.grid.cell_y(i,j,k);
+        Real z = lb.grid.cell_z(i,j,k);
+
+        // ---- Wall distance in wall units ----
+        // y ∈ [-1, 1];  lower wall at y = -1, upper wall at y = +1
+        Real yplus;
+        if (y < 0.0) {
+            yplus = (y + 1.0) * Re_tau;
+        } else {
+            yplus = (1.0 - y) * Re_tau;
+        }
+
+        // ---- Spalding's law of the wall ----
+        Real u_mean = (1.0 / kappa) * std::log(1.0 + kappa * yplus)
+                    + B * (1.0 - std::exp(-yplus / 11.0)
+                               - (yplus / 11.0) * std::exp(-yplus / 3.0));
+
+        // Turbulence intensity: 10 % of local mean
+        Real Amp = 0.1 * u_mean;
+
+        // ---- Streamwise velocity: mean + y–z perturbations ----
+        Real u = u_mean;
+        u += Amp * std::sin(20.0 * M_PI * y / 2.0) * std::sin(20.0 * M_PI * z / (2.0 * M_PI));
+        u += Amp * std::sin(30.0 * M_PI * y / 2.0) * std::sin(30.0 * M_PI * z / (2.0 * M_PI));
+        u += Amp * std::sin(35.0 * M_PI * y / 2.0) * std::sin(35.0 * M_PI * z / (2.0 * M_PI));
+        u += Amp * std::sin(40.0 * M_PI * y / 2.0) * std::sin(40.0 * M_PI * z / (2.0 * M_PI));
+        u += Amp * std::sin(45.0 * M_PI * y / 2.0) * std::sin(45.0 * M_PI * z / (2.0 * M_PI));
+        u += Amp * std::sin(50.0 * M_PI * y / 2.0) * std::sin(50.0 * M_PI * z / (2.0 * M_PI));
+
+        // ---- Spanwise velocity: x–z perturbations ----
+        Real v = 0.0;
+        v += Amp * std::sin(30.0 * M_PI * x / (4.0 * M_PI)) * std::sin(30.0 * M_PI * z / (2.0 * M_PI));
+        v += Amp * std::sin(35.0 * M_PI * x / (4.0 * M_PI)) * std::sin(35.0 * M_PI * z / (2.0 * M_PI));
+        v += Amp * std::sin(40.0 * M_PI * x / (4.0 * M_PI)) * std::sin(40.0 * M_PI * z / (2.0 * M_PI));
+        v += Amp * std::sin(45.0 * M_PI * x / (4.0 * M_PI)) * std::sin(45.0 * M_PI * z / (2.0 * M_PI));
+        v += Amp * std::sin(50.0 * M_PI * x / (4.0 * M_PI)) * std::sin(50.0 * M_PI * z / (2.0 * M_PI));
+
+        // ---- Wall-normal velocity: x–y perturbations ----
+        Real w = 0.0;
+        w += Amp * std::sin(30.0 * M_PI * x / (4.0 * M_PI)) * std::sin(30.0 * M_PI * y / 2.0);
+        w += Amp * std::sin(35.0 * M_PI * x / (4.0 * M_PI)) * std::sin(35.0 * M_PI * y / 2.0);
+        w += Amp * std::sin(40.0 * M_PI * x / (4.0 * M_PI)) * std::sin(40.0 * M_PI * y / 2.0);
+        w += Amp * std::sin(45.0 * M_PI * x / (4.0 * M_PI)) * std::sin(45.0 * M_PI * y / 2.0);
+        w += Amp * std::sin(50.0 * M_PI * x / (4.0 * M_PI)) * std::sin(50.0 * M_PI * y / 2.0);
+
+        lb.field.prim.rho(i,j,k) = 1.0;
+        lb.field.prim.u(i,j,k)   = u;
+        lb.field.prim.v(i,j,k)   = v;
+        lb.field.prim.w(i,j,k)   = w;
+        lb.field.prim.p(i,j,k)   = p_inf;
+    }
+}
+
+// ============================================================================
+// Isentropic vortex — exact solution of 2D Euler equations
+// ============================================================================
+//
+// A vortex perturbation is superimposed on a uniform mean flow:
+//
+//   δu = -β * (y-yc)/R * exp(f)
+//   δv =  β * (x-xc)/R * exp(f)
+//   δT = -½(γ-1) * β² * exp(2f)
+//
+// where f = ½(1 - ((x-xc)²+(y-yc)²)/R²).
+//
+// From the isentropic relation (s = const):
+//   ρ = T^{1/(γ-1)}     (normalized by free-stream ρ=1, T=1)
+//   p = T^{γ/(γ-1)} / (γ·Ma²)
+//
+// The exact time-dependent solution is just the initial condition
+// advected by the mean flow:  xc(t) = xc0 + u_inf·t, yc(t) = yc0 + v_inf·t.
+// With periodic BCs, the vortex returns to its initial position after
+// T = L / |(u_inf, v_inf)|.
+//
+// Reference:
+//   Jiang & Shu, JCP 126 (1996), "Efficient Implementation of WENO Schemes"
+
+inline void FlowInitializer::init_isentropic_vortex(LocalBlock& lb,
+                                                      const Config& cfg) {
+    Int i0, i1, j0, j1, k0, k1;
+    interior_range(lb, i0, i1, j0, j1, k0, k1);
+
+    const Real beta  = cfg.isentropic_vortex_strength;
+    const Real Rv    = cfg.isentropic_vortex_radius;
+    const Real xc    = cfg.isentropic_vortex_xc;
+    const Real yc    = cfg.isentropic_vortex_yc;
+    const Real u_inf = cfg.isentropic_vortex_u_inf;
+    const Real v_inf = cfg.isentropic_vortex_v_inf;
+    const Real gamma = cfg.gamma;
+    const Real gm1   = gamma - 1.0;
+    const Real Ma2   = cfg.Mach * cfg.Mach;
+
+    const Real one_over_Rv = 1.0 / Rv;
+
+    for (Int k = k0; k <= k1; ++k)
+    for (Int j = j0; j <= j1; ++j)
+    for (Int i = i0; i <= i1; ++i) {
+        Real x = lb.grid.cell_x(i,j,k);
+        Real y = lb.grid.cell_y(i,j,k);
+
+        // Normalized distance from vortex center
+        Real dx = x - xc;
+        Real dy = y - yc;
+        Real r2 = (dx*dx + dy*dy) * one_over_Rv * one_over_Rv;
+
+        // f = ½(1 - r²)
+        Real f = 0.5 * (1.0 - r2);
+
+        // Velocity perturbations
+        Real du = -beta * dy * one_over_Rv * std::exp(f);
+        Real dv =  beta * dx * one_over_Rv * std::exp(f);
+
+        // Temperature perturbation: δT = -½(γ-1)β²·exp(2f)
+        Real dT = -0.5 * gm1 * beta * beta * std::exp(2.0 * f);
+
+        // Temperature, density, pressure from isentropic relations
+        Real T_loc = 1.0 + dT;
+        Real rho   = std::pow(T_loc, 1.0 / gm1);       // T^{1/(γ-1)}
+        Real p     = rho * T_loc / (gamma * Ma2);       // EOS
+
+        lb.field.prim.rho(i,j,k) = rho;
+        lb.field.prim.u(i,j,k)   = u_inf + du;
+        lb.field.prim.v(i,j,k)   = v_inf + dv;
+        lb.field.prim.w(i,j,k)   = 0.0;
+        lb.field.prim.p(i,j,k)   = p;
     }
 }

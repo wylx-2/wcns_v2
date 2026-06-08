@@ -31,29 +31,53 @@ constexpr Real weno_d2 = Real(5.0 / 16.0);
 
 inline bool WcnsInterpBase::fill_boundary(const Real* a, Int h, Int n,
                                            Real& ql, Real& qr) {
+    // For boundary faces, use robust low-order interpolation that preserves
+    // positivity.  High-order one-sided formulas can produce non-physical
+    // values (negative density/pressure) near strong discontinuities,
+    // especially at MPI split boundaries where the ghost data comes from
+    // a neighboring block with a different flow state.
+    //
+    // Strategy: use 2nd-order linear extrapolation (weighted average of
+    // nearest two cells) which is positivity-preserving for monotone data.
+    // qL uses the two cells left of the face, qR uses the two cells right.
+
     if (h == 0) {
-        Real v = InterpDiff::interp_left_1st(&a[0]);
-        ql = v; qr = v; return true;
+        // Leftmost face: between a[-1] (nonexistent) and a[0]
+        // For density: just copy nearest interior cell (safe, positivity-preserving)
+        ql = a[0];
+        qr = a[0];
+        return true;
     }
     if (h == 1) {
-        Real v = InterpDiff::interp_left_2nd(&a[0]);
-        ql = v; qr = v; return true;
+        // Between a[0] and a[1]
+        ql = 0.5 * (a[0] + a[1]);
+        qr = 0.5 * (a[0] + a[1]);
+        return true;
     }
     if (h == 2) {
-        Real v = InterpDiff::interp_left_3rd(&a[0]);
-        ql = v; qr = v; return true;
+        // Between a[1] and a[2]
+        ql = 0.5 * (a[1] + a[2]);
+        qr = 0.5 * (a[1] + a[2]);
+        return true;
     }
     if (h == n) {
-        Real v = InterpDiff::interp_right_1st(&a[n - 5]);
-        ql = v; qr = v; return true;
+        // Rightmost face: between a[n-1] and a[n] (nonexistent)
+        ql = 1.5 * a[n-1] - 0.5 * a[n-2];  // linear extrapolation from left
+        qr = 1.5 * a[n-1] - 0.5 * a[n-2];
+        if (ql <= 0.0) { ql = a[n-1]; qr = a[n-1]; }
+        return true;
     }
     if (h == n - 1) {
-        Real v = InterpDiff::interp_right_2nd(&a[n - 5]);
-        ql = v; qr = v; return true;
+        // Between a[n-2] and a[n-1]
+        ql = 0.5 * (a[n-2] + a[n-1]);
+        qr = 0.5 * (a[n-2] + a[n-1]);
+        return true;
     }
     if (h == n - 2) {
-        Real v = InterpDiff::interp_right_3rd(&a[n - 5]);
-        ql = v; qr = v; return true;
+        // Between a[n-3] and a[n-2]
+        ql = 0.5 * (a[n-3] + a[n-2]);
+        qr = 0.5 * (a[n-3] + a[n-2]);
+        return true;
     }
     return false;
 }

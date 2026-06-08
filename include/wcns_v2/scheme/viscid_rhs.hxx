@@ -985,11 +985,11 @@ inline void ViscidRHS::compute_rhs(LocalBlock& lb) {
                  + c2_vis * (f.vis_xi.f5(i+3,j,k) - f.vis_xi.f5(i-2,j,k));
 
         Real inv_J = Real(1.0) / std::abs(lb.grid.jacobian(i, j, k));
-        f.rhs.rho(i,j,k)  -= dF1 * inv_J;
-        f.rhs.rhou(i,j,k) -= dF2 * inv_J;
-        f.rhs.rhov(i,j,k) -= dF3 * inv_J;
-        f.rhs.rhow(i,j,k) -= dF4 * inv_J;
-        f.rhs.rhoE(i,j,k) -= dF5 * inv_J;
+        f.rhs.rho(i,j,k)  += dF1 * inv_J;
+        f.rhs.rhou(i,j,k) += dF2 * inv_J;
+        f.rhs.rhov(i,j,k) += dF3 * inv_J;
+        f.rhs.rhow(i,j,k) += dF4 * inv_J;
+        f.rhs.rhoE(i,j,k) += dF5 * inv_J;
     }}}
 
     // ---- η-direction: differentiate vis_eta along j ----
@@ -1013,11 +1013,11 @@ inline void ViscidRHS::compute_rhs(LocalBlock& lb) {
                  + c1_vis * (f.vis_eta.f5(i,j+2,k) - f.vis_eta.f5(i,j-1,k))
                  + c2_vis * (f.vis_eta.f5(i,j+3,k) - f.vis_eta.f5(i,j-2,k));
 
-        f.rhs.rho(i,j,k)  -= dG1 * inv_J;
-        f.rhs.rhou(i,j,k) -= dG2 * inv_J;
-        f.rhs.rhov(i,j,k) -= dG3 * inv_J;
-        f.rhs.rhow(i,j,k) -= dG4 * inv_J;
-        f.rhs.rhoE(i,j,k) -= dG5 * inv_J;
+        f.rhs.rho(i,j,k)  += dG1 * inv_J;
+        f.rhs.rhou(i,j,k) += dG2 * inv_J;
+        f.rhs.rhov(i,j,k) += dG3 * inv_J;
+        f.rhs.rhow(i,j,k) += dG4 * inv_J;
+        f.rhs.rhoE(i,j,k) += dG5 * inv_J;
     }}}
 
     // ---- ζ-direction: differentiate vis_zeta along k ----
@@ -1041,10 +1041,10 @@ inline void ViscidRHS::compute_rhs(LocalBlock& lb) {
                  + c1_vis * (f.vis_zeta.f5(i,j,k+2) - f.vis_zeta.f5(i,j,k-1))
                  + c2_vis * (f.vis_zeta.f5(i,j,k+3) - f.vis_zeta.f5(i,j,k-2));
 
-        f.rhs.rho(i,j,k)  -= dH1 * inv_J;
-        f.rhs.rhou(i,j,k) -= dH2 * inv_J;
-        f.rhs.rhov(i,j,k) -= dH3 * inv_J;
-        f.rhs.rhow(i,j,k) -= dH4 * inv_J;
-        f.rhs.rhoE(i,j,k) -= dH5 * inv_J;
+        f.rhs.rho(i,j,k)  += dH1 * inv_J;
+        f.rhs.rhou(i,j,k) += dH2 * inv_J;
+        f.rhs.rhov(i,j,k) += dH3 * inv_J;
+        f.rhs.rhow(i,j,k) += dH4 * inv_J;
+        f.rhs.rhoE(i,j,k) += dH5 * inv_J;
     }}}
 }

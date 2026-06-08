@@ -582,6 +582,11 @@ inline void Grid::compute_coord_deriv(int dir, Real dh, const bool fp[6],
 }
 
 inline void Grid::compute_metrics() {
+    if (metrics_type == "uniform") {
+        compute_metrics_uniform();
+        return;
+    }
+
     // ---- 1. Determine periodic faces ----
     bool fp[6];
     build_face_periodic(fp);
@@ -769,12 +774,133 @@ inline void Grid::compute_metrics() {
 }
 
 // ============================================================================
+// Analytical uniform Cartesian metrics
+// ============================================================================
+
+inline void Grid::compute_metrics_uniform() {
+    // Infer dx, dy, dz from interior cell centers.
+    // Use cells away from boundaries (interior region) for robustness.
+    Int i0 = ng + nci / 4;
+    Int j0 = ng + ncj / 4;
+    Int k0 = ng + nck / 4;
+
+    Real dx = cell_x(i0+1, j0, k0) - cell_x(i0, j0, k0);
+    Real dy = cell_y(i0, j0+1, k0) - cell_y(i0, j0, k0);
+    Real dz = cell_z(i0, j0, k0+1) - cell_z(i0, j0, k0);
+
+    std::cout << "  Analytical uniform metrics: dx=" << dx
+              << ", dy=" << dy << ", dz=" << dz << "\n";
+
+    // Allocate cell-center metric arrays
+    met_xi_x.allocate(nci, ncj, nck);
+    met_xi_y.allocate(nci, ncj, nck);
+    met_xi_z.allocate(nci, ncj, nck);
+    met_eta_x.allocate(nci, ncj, nck);
+    met_eta_y.allocate(nci, ncj, nck);
+    met_eta_z.allocate(nci, ncj, nck);
+    met_zeta_x.allocate(nci, ncj, nck);
+    met_zeta_y.allocate(nci, ncj, nck);
+    met_zeta_z.allocate(nci, ncj, nck);
+    jacobian.allocate(nci, ncj, nck);
+
+    // For uniform Cartesian grid, metrics are constant:
+    //   S_ξ = (dy*dz, 0, 0)     — face area in x-direction
+    //   S_η = (0, dx*dz, 0)     — face area in y-direction
+    //   S_ζ = (0, 0, dx*dy)     — face area in z-direction
+    //   J   = dx*dy*dz          — cell volume
+    Real xi_area  = dy * dz;   // |S_ξ|
+    Real eta_area = dx * dz;   // |S_η|
+    Real zeta_area = dx * dy;  // |S_ζ|
+    Real J = dx * dy * dz;
+
+    for (Int k = 0; k < nck; ++k) {
+    for (Int j = 0; j < ncj; ++j) {
+    for (Int i = 0; i < nci; ++i) {
+        // ξ-direction metrics (x-normal faces)
+        met_xi_x(i,j,k) = xi_area;
+        met_xi_y(i,j,k) = 0.0;
+        met_xi_z(i,j,k) = 0.0;
+
+        // η-direction metrics (y-normal faces)
+        met_eta_x(i,j,k) = 0.0;
+        met_eta_y(i,j,k) = eta_area;
+        met_eta_z(i,j,k) = 0.0;
+
+        // ζ-direction metrics (z-normal faces)
+        met_zeta_x(i,j,k) = 0.0;
+        met_zeta_y(i,j,k) = 0.0;
+        met_zeta_z(i,j,k) = zeta_area;
+
+        // Jacobian
+        jacobian(i,j,k) = J;
+    }}}
+
+    std::cout << "  Uniform metrics: |S_xi|=" << xi_area
+              << ", |S_eta|=" << eta_area
+              << ", |S_zeta|=" << zeta_area
+              << ", J=" << J << "\n";
+}
+
+// ============================================================================
 // Face metric interpolation
 // ============================================================================
 
 inline void Grid::compute_face_metrics() {
     bool fp[6];
     build_face_periodic(fp);
+
+    if (metrics_type == "uniform") {
+        // Uniform grid: face metrics equal cell-center metrics (all constant).
+        // Infer dx,dy,dz from interior cells (same as compute_metrics_uniform)
+        Int i0 = ng + nci / 4;
+        Int j0 = ng + ncj / 4;
+        Int k0 = ng + nck / 4;
+        Real dx = cell_x(i0+1, j0, k0) - cell_x(i0, j0, k0);
+        Real dy = cell_y(i0, j0+1, k0) - cell_y(i0, j0, k0);
+        Real dz = cell_z(i0, j0, k0+1) - cell_z(i0, j0, k0);
+        Real xi_area  = dy * dz;
+        Real eta_area = dx * dz;
+        Real zeta_area = dx * dy;
+
+        // X-faces (i+1/2): size (nci+1) x ncj x nck
+        face_xi_x.allocate(nci + 1, ncj, nck);
+        face_xi_y.allocate(nci + 1, ncj, nck);
+        face_xi_z.allocate(nci + 1, ncj, nck);
+        for (Int k = 0; k < nck; ++k)
+        for (Int j = 0; j < ncj; ++j)
+        for (Int i = 0; i < nci + 1; ++i) {
+            face_xi_x(i,j,k) = xi_area;
+            face_xi_y(i,j,k) = 0.0;
+            face_xi_z(i,j,k) = 0.0;
+        }
+
+        // Y-faces (j+1/2): size nci x (ncj+1) x nck
+        face_eta_x.allocate(nci, ncj + 1, nck);
+        face_eta_y.allocate(nci, ncj + 1, nck);
+        face_eta_z.allocate(nci, ncj + 1, nck);
+        for (Int k = 0; k < nck; ++k)
+        for (Int j = 0; j < ncj + 1; ++j)
+        for (Int i = 0; i < nci; ++i) {
+            face_eta_x(i,j,k) = 0.0;
+            face_eta_y(i,j,k) = eta_area;
+            face_eta_z(i,j,k) = 0.0;
+        }
+
+        // Z-faces (k+1/2): size nci x ncj x (nck+1)
+        face_zeta_x.allocate(nci, ncj, nck + 1);
+        face_zeta_y.allocate(nci, ncj, nck + 1);
+        face_zeta_z.allocate(nci, ncj, nck + 1);
+        for (Int k = 0; k < nck + 1; ++k)
+        for (Int j = 0; j < ncj; ++j)
+        for (Int i = 0; i < nci; ++i) {
+            face_zeta_x(i,j,k) = 0.0;
+            face_zeta_y(i,j,k) = 0.0;
+            face_zeta_z(i,j,k) = zeta_area;
+        }
+
+        std::cout << "  Uniform face metrics set directly (no interpolation)\n";
+        return;
+    }
 
     // --- X-faces (i+1/2): size (nci+1) x ncj x nck ---
     face_xi_x.allocate(nci + 1, ncj, nck);

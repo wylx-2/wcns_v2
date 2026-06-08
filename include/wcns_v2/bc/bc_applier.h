@@ -24,11 +24,19 @@ public:
     /// Only processes faces where neighbors[f].active == false (BC faces).
     static void apply_all(LocalBlock& lb, const Config& cfg);
 
-private:
-    // ---- Stage 1: face ghost ----
-    /// Fill face ghost cells (including edge/corner overlaps — these will be
-    /// corrected in stages 2 and 3).
+    // ---- Individual stages (exposed for reordering with halo exchange) ----
+
+    /// Stage 1: Fill face ghost cells (including edge/corner overlaps).
+    /// Must be called BEFORE halo exchange.
     static void apply_face_ghost(LocalBlock& lb, const Config& cfg);
+
+    /// Stage 2: Fill edge ghost cells (intersection of two faces).
+    /// Must be called AFTER halo exchange so that MPI-split ghost data is valid.
+    static void apply_edge_ghost(LocalBlock& lb);
+
+    /// Stage 3: Fill corner ghost cells (intersection of three faces).
+    /// Must be called AFTER halo exchange so that MPI-split ghost data is valid.
+    static void apply_corner_ghost(LocalBlock& lb);
 
     /// Apply a specific BC type to a rectangular patch on one face.
     /// (j0,j1,k0,k1) are the cell index ranges in the tangential directions.
@@ -41,6 +49,9 @@ private:
                                Int j0, Int j1, Int k0, Int k1);
     static void apply_wall_noslip(int face, LocalBlock& lb,
                                   Int j0, Int j1, Int k0, Int k1);
+    static void apply_wall_noslip_isothermal(int face, LocalBlock& lb,
+                                              const Config& cfg,
+                                              Int j0, Int j1, Int k0, Int k1);
     static void apply_wall_slip(int face, LocalBlock& lb,
                                 Int j0, Int j1, Int k0, Int k1);
     static void apply_symmetry(int face, LocalBlock& lb,
@@ -49,10 +60,6 @@ private:
                              Int j0, Int j1, Int k0, Int k1);
     static void apply_outflow(int face, LocalBlock& lb,
                               Int j0, Int j1, Int k0, Int k1);
-
-    // ---- Stage 2 & 3: edge and corner ----
-    static void apply_edge_ghost(LocalBlock& lb);
-    static void apply_corner_ghost(LocalBlock& lb);
 
     // ---- Helpers ----
     /// Convert a BCPatch node range to cell index range in the face-tangential

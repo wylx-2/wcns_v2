@@ -7,6 +7,118 @@
 #include <stdexcept>
 
 // ============================================================================
+// detail: directional loop helpers — eliminate boilerplate across solvers
+// ============================================================================
+
+namespace detail {
+
+/// Signature of a per-face flux kernel.
+/// qL, qR: left/right conservative states (5 components)
+/// Sx, Sy, Sz: face area vector
+/// gamma: specific heat ratio
+/// eps: entropy fix coefficient (ignored by non-Roe solvers)
+/// flux: [out] 5-component numerical flux through the face
+using FluxKernel = void (*)(const Real qL[5], const Real qR[5],
+                             Real Sx, Real Sy, Real Sz,
+                             Real gamma, Real eps,
+                             Real flux[5]);
+
+inline void solve_xi_impl(LocalBlock& lb, Real gamma, Real eps, FluxKernel kernel) {
+    const auto& grid = lb.grid;
+    auto& f = lb.field;
+
+    const Int ni = grid.nci + 1;
+    const Int nj = grid.ncj;
+    const Int nk = grid.nck;
+
+    for (Int k = 0; k < nk; ++k) {
+    for (Int j = 0; j < nj; ++j) {
+    for (Int i = 0; i < ni; ++i) {
+        Real qL[5] = { f.ql_xi.rho(i,j,k),  f.ql_xi.rhou(i,j,k),
+                       f.ql_xi.rhov(i,j,k), f.ql_xi.rhow(i,j,k),
+                       f.ql_xi.rhoE(i,j,k) };
+        Real qR[5] = { f.qr_xi.rho(i,j,k),  f.qr_xi.rhou(i,j,k),
+                       f.qr_xi.rhov(i,j,k), f.qr_xi.rhow(i,j,k),
+                       f.qr_xi.rhoE(i,j,k) };
+
+        Real flux[5];
+        kernel(qL, qR,
+               grid.face_xi_x(i,j,k), grid.face_xi_y(i,j,k), grid.face_xi_z(i,j,k),
+               gamma, eps, flux);
+
+        f.inv_xi.f1(i,j,k) = flux[0];
+        f.inv_xi.f2(i,j,k) = flux[1];
+        f.inv_xi.f3(i,j,k) = flux[2];
+        f.inv_xi.f4(i,j,k) = flux[3];
+        f.inv_xi.f5(i,j,k) = flux[4];
+    }}}
+}
+
+inline void solve_eta_impl(LocalBlock& lb, Real gamma, Real eps, FluxKernel kernel) {
+    const auto& grid = lb.grid;
+    auto& f = lb.field;
+
+    const Int ni = grid.nci;
+    const Int nj = grid.ncj + 1;
+    const Int nk = grid.nck;
+
+    for (Int k = 0; k < nk; ++k) {
+    for (Int j = 0; j < nj; ++j) {
+    for (Int i = 0; i < ni; ++i) {
+        Real qL[5] = { f.ql_eta.rho(i,j,k),  f.ql_eta.rhou(i,j,k),
+                       f.ql_eta.rhov(i,j,k), f.ql_eta.rhow(i,j,k),
+                       f.ql_eta.rhoE(i,j,k) };
+        Real qR[5] = { f.qr_eta.rho(i,j,k),  f.qr_eta.rhou(i,j,k),
+                       f.qr_eta.rhov(i,j,k), f.qr_eta.rhow(i,j,k),
+                       f.qr_eta.rhoE(i,j,k) };
+
+        Real flux[5];
+        kernel(qL, qR,
+               grid.face_eta_x(i,j,k), grid.face_eta_y(i,j,k), grid.face_eta_z(i,j,k),
+               gamma, eps, flux);
+
+        f.inv_eta.f1(i,j,k) = flux[0];
+        f.inv_eta.f2(i,j,k) = flux[1];
+        f.inv_eta.f3(i,j,k) = flux[2];
+        f.inv_eta.f4(i,j,k) = flux[3];
+        f.inv_eta.f5(i,j,k) = flux[4];
+    }}}
+}
+
+inline void solve_zeta_impl(LocalBlock& lb, Real gamma, Real eps, FluxKernel kernel) {
+    const auto& grid = lb.grid;
+    auto& f = lb.field;
+
+    const Int ni = grid.nci;
+    const Int nj = grid.ncj;
+    const Int nk = grid.nck + 1;
+
+    for (Int k = 0; k < nk; ++k) {
+    for (Int j = 0; j < nj; ++j) {
+    for (Int i = 0; i < ni; ++i) {
+        Real qL[5] = { f.ql_zeta.rho(i,j,k),  f.ql_zeta.rhou(i,j,k),
+                       f.ql_zeta.rhov(i,j,k), f.ql_zeta.rhow(i,j,k),
+                       f.ql_zeta.rhoE(i,j,k) };
+        Real qR[5] = { f.qr_zeta.rho(i,j,k),  f.qr_zeta.rhou(i,j,k),
+                       f.qr_zeta.rhov(i,j,k), f.qr_zeta.rhow(i,j,k),
+                       f.qr_zeta.rhoE(i,j,k) };
+
+        Real flux[5];
+        kernel(qL, qR,
+               grid.face_zeta_x(i,j,k), grid.face_zeta_y(i,j,k), grid.face_zeta_z(i,j,k),
+               gamma, eps, flux);
+
+        f.inv_zeta.f1(i,j,k) = flux[0];
+        f.inv_zeta.f2(i,j,k) = flux[1];
+        f.inv_zeta.f3(i,j,k) = flux[2];
+        f.inv_zeta.f4(i,j,k) = flux[3];
+        f.inv_zeta.f5(i,j,k) = flux[4];
+    }}}
+}
+
+} // namespace detail
+
+// ============================================================================
 // Factory
 // ============================================================================
 
@@ -14,6 +126,15 @@ inline std::unique_ptr<RiemannSolverBase>
 RiemannSolverBase::create(const Config& cfg) {
     if (cfg.riemann_type == "roe") {
         return std::make_unique<RiemannSolverRoe>();
+    }
+    if (cfg.riemann_type == "rusanov") {
+        return std::make_unique<RiemannSolverRusanov>();
+    }
+    if (cfg.riemann_type == "hll") {
+        return std::make_unique<RiemannSolverHLL>();
+    }
+    if (cfg.riemann_type == "hllc") {
+        return std::make_unique<RiemannSolverHLLC>();
     }
     throw std::runtime_error("RiemannSolverBase::create: unknown type \""
                              + cfg.riemann_type + "\"");
@@ -284,3 +405,304 @@ inline void RiemannSolverRoe::solve_zeta(LocalBlock& lb, const Config& cfg) cons
         f.inv_zeta.f5(i,j,k) = flux[4];
     }}}
 }
+
+// ============================================================================
+// Rusanov (Local Lax-Friedrichs) flux kernel
+// ============================================================================
+
+namespace detail {
+
+inline void rusanov_flux(const Real qL[5], const Real qR[5],
+                          Real Sx, Real Sy, Real Sz,
+                          Real gamma, Real /*eps*/,
+                          Real flux[5])
+{
+    // ---- 1. Extract primitive variables ----
+
+    Real rhoL = qL[0];
+    Real uL   = qL[1] / rhoL;
+    Real vL   = qL[2] / rhoL;
+    Real wL   = qL[3] / rhoL;
+    Real keL  = 0.5 * (qL[1]*uL + qL[2]*vL + qL[3]*wL);
+    Real pL   = (gamma - 1.0) * (qL[4] - keL);
+
+    Real rhoR = qR[0];
+    Real uR   = qR[1] / rhoR;
+    Real vR   = qR[2] / rhoR;
+    Real wR   = qR[3] / rhoR;
+    Real keR  = 0.5 * (qR[1]*uR + qR[2]*vR + qR[3]*wR);
+    Real pR   = (gamma - 1.0) * (qR[4] - keR);
+
+    // ---- 2. Physical flux through the face ----
+
+    Real UL = Sx*uL + Sy*vL + Sz*wL;
+    Real UR = Sx*uR + Sy*vR + Sz*wR;
+
+    Real FL[5], FR[5];
+    FL[0] = qL[0] * UL;
+    FL[1] = qL[1] * UL + pL * Sx;
+    FL[2] = qL[2] * UL + pL * Sy;
+    FL[3] = qL[3] * UL + pL * Sz;
+    FL[4] = (qL[4] + pL) * UL;
+
+    FR[0] = qR[0] * UR;
+    FR[1] = qR[1] * UR + pR * Sx;
+    FR[2] = qR[2] * UR + pR * Sy;
+    FR[3] = qR[3] * UR + pR * Sz;
+    FR[4] = (qR[4] + pR) * UR;
+
+    // ---- 3. Maximum local wave speed (spectral radius) ----
+
+    Real absS  = std::sqrt(Sx*Sx + Sy*Sy + Sz*Sz);
+    Real cL    = std::sqrt(std::max(0.0, gamma * pL / rhoL));
+    Real cR    = std::sqrt(std::max(0.0, gamma * pR / rhoR));
+    Real SmaxL = std::abs(UL) + cL * absS;
+    Real SmaxR = std::abs(UR) + cR * absS;
+    Real Smax  = std::max(SmaxL, SmaxR);
+
+    // ---- 4. Rusanov flux: F = 0.5*(F_L+F_R) - 0.5*Smax*(Q_R-Q_L) ----
+
+    for (int k = 0; k < 5; ++k) {
+        flux[k] = 0.5 * (FL[k] + FR[k]) - 0.5 * Smax * (qR[k] - qL[k]);
+    }
+}
+
+} // namespace detail
+
+// --- Directional solve methods ---
+
+inline void RiemannSolverRusanov::solve_xi  (LocalBlock& lb, const Config& cfg) const { detail::solve_xi_impl  (lb, cfg.gamma, cfg.entropy_fix_eps, detail::rusanov_flux); }
+inline void RiemannSolverRusanov::solve_eta (LocalBlock& lb, const Config& cfg) const { detail::solve_eta_impl (lb, cfg.gamma, cfg.entropy_fix_eps, detail::rusanov_flux); }
+inline void RiemannSolverRusanov::solve_zeta(LocalBlock& lb, const Config& cfg) const { detail::solve_zeta_impl(lb, cfg.gamma, cfg.entropy_fix_eps, detail::rusanov_flux); }
+
+// ============================================================================
+// HLL flux kernel
+// ============================================================================
+
+namespace detail {
+
+inline void hll_flux(const Real qL[5], const Real qR[5],
+                      Real Sx, Real Sy, Real Sz,
+                      Real gamma, Real /*eps*/,
+                      Real flux[5])
+{
+    // ---- 1. Extract primitive variables ----
+
+    Real rhoL = qL[0];
+    Real uL   = qL[1] / rhoL;
+    Real vL   = qL[2] / rhoL;
+    Real wL   = qL[3] / rhoL;
+    Real keL  = 0.5 * (qL[1]*uL + qL[2]*vL + qL[3]*wL);
+    Real pL   = (gamma - 1.0) * (qL[4] - keL);
+
+    Real rhoR = qR[0];
+    Real uR   = qR[1] / rhoR;
+    Real vR   = qR[2] / rhoR;
+    Real wR   = qR[3] / rhoR;
+    Real keR  = 0.5 * (qR[1]*uR + qR[2]*vR + qR[3]*wR);
+    Real pR   = (gamma - 1.0) * (qR[4] - keR);
+
+    // ---- 2. Physical flux through the face ----
+
+    Real UL = Sx*uL + Sy*vL + Sz*wL;
+    Real UR = Sx*uR + Sy*vR + Sz*wR;
+
+    Real FL[5], FR[5];
+    FL[0] = qL[0] * UL;
+    FL[1] = qL[1] * UL + pL * Sx;
+    FL[2] = qL[2] * UL + pL * Sy;
+    FL[3] = qL[3] * UL + pL * Sz;
+    FL[4] = (qL[4] + pL) * UL;
+
+    FR[0] = qR[0] * UR;
+    FR[1] = qR[1] * UR + pR * Sx;
+    FR[2] = qR[2] * UR + pR * Sy;
+    FR[3] = qR[3] * UR + pR * Sz;
+    FR[4] = (qR[4] + pR) * UR;
+
+    // ---- 3. Wave speed estimates (Davis) ----
+
+    Real absS = std::sqrt(Sx*Sx + Sy*Sy + Sz*Sz);
+    Real cL   = std::sqrt(std::max(0.0, gamma * pL / rhoL));
+    Real cR   = std::sqrt(std::max(0.0, gamma * pR / rhoR));
+
+    Real SL = std::min(UL - cL * absS, UR - cR * absS);
+    Real SR = std::max(UL + cL * absS, UR + cR * absS);
+
+    // ---- 4. HLL flux ----
+
+    if (SL >= 0.0) {
+        for (int k = 0; k < 5; ++k) flux[k] = FL[k];
+    } else if (SR <= 0.0) {
+        for (int k = 0; k < 5; ++k) flux[k] = FR[k];
+    } else {
+        Real inv_dS = 1.0 / (SR - SL);
+        for (int k = 0; k < 5; ++k) {
+            flux[k] = (SR * FL[k] - SL * FR[k] + SL * SR * (qR[k] - qL[k])) * inv_dS;
+        }
+    }
+}
+
+} // namespace detail
+
+// --- Directional solve methods ---
+
+inline void RiemannSolverHLL::solve_xi  (LocalBlock& lb, const Config& cfg) const { detail::solve_xi_impl  (lb, cfg.gamma, cfg.entropy_fix_eps, detail::hll_flux); }
+inline void RiemannSolverHLL::solve_eta (LocalBlock& lb, const Config& cfg) const { detail::solve_eta_impl (lb, cfg.gamma, cfg.entropy_fix_eps, detail::hll_flux); }
+inline void RiemannSolverHLL::solve_zeta(LocalBlock& lb, const Config& cfg) const { detail::solve_zeta_impl(lb, cfg.gamma, cfg.entropy_fix_eps, detail::hll_flux); }
+
+// ============================================================================
+// HLLC flux kernel
+// ============================================================================
+
+namespace detail {
+
+inline void hllc_flux(const Real qL[5], const Real qR[5],
+                       Real Sx, Real Sy, Real Sz,
+                       Real gamma, Real /*eps*/,
+                       Real flux[5])
+{
+    // ---- 1. Extract primitive variables ----
+
+    Real rhoL = qL[0];
+    Real uL   = qL[1] / rhoL;
+    Real vL   = qL[2] / rhoL;
+    Real wL   = qL[3] / rhoL;
+    Real keL  = 0.5 * (qL[1]*uL + qL[2]*vL + qL[3]*wL);
+    Real pL   = (gamma - 1.0) * (qL[4] - keL);
+
+    Real rhoR = qR[0];
+    Real uR   = qR[1] / rhoR;
+    Real vR   = qR[2] / rhoR;
+    Real wR   = qR[3] / rhoR;
+    Real keR  = 0.5 * (qR[1]*uR + qR[2]*vR + qR[3]*wR);
+    Real pR   = (gamma - 1.0) * (qR[4] - keR);
+
+    // ---- 2. Physical flux through the face ----
+
+    Real UL = Sx*uL + Sy*vL + Sz*wL;
+    Real UR = Sx*uR + Sy*vR + Sz*wR;
+
+    Real FL[5], FR[5];
+    FL[0] = qL[0] * UL;
+    FL[1] = qL[1] * UL + pL * Sx;
+    FL[2] = qL[2] * UL + pL * Sy;
+    FL[3] = qL[3] * UL + pL * Sz;
+    FL[4] = (qL[4] + pL) * UL;
+
+    FR[0] = qR[0] * UR;
+    FR[1] = qR[1] * UR + pR * Sx;
+    FR[2] = qR[2] * UR + pR * Sy;
+    FR[3] = qR[3] * UR + pR * Sz;
+    FR[4] = (qR[4] + pR) * UR;
+
+    // ---- 3. Wave speed estimates (Davis) ----
+
+    Real absS     = std::sqrt(Sx*Sx + Sy*Sy + Sz*Sz);
+    Real inv_absS = 1.0 / std::max(absS, Real(1e-30));
+    Real inv_absS2 = inv_absS * inv_absS;
+
+    Real cL = std::sqrt(std::max(0.0, gamma * pL / rhoL));
+    Real cR = std::sqrt(std::max(0.0, gamma * pR / rhoR));
+
+    Real SL = std::min(UL - cL * absS, UR - cR * absS);
+    Real SR = std::max(UL + cL * absS, UR + cR * absS);
+
+    // ---- 4. HLLC flux branching ----
+
+    if (SL >= 0.0) {
+        for (int k = 0; k < 5; ++k) flux[k] = FL[k];
+        return;
+    }
+    if (SR <= 0.0) {
+        for (int k = 0; k < 5; ++k) flux[k] = FR[k];
+        return;
+    }
+
+    // ---- 5. Contact wave speed S* ----
+    // Solve p*_L = p*_R for S* (in contravariant units, includes |S| factor)
+
+    Real dL = rhoL * (SL - UL);
+    Real dR = rhoR * (SR - UR);
+
+    Real denom = dL - dR;
+    if (std::abs(denom) < Real(1e-30)) {
+        // Degenerate — fall back to HLL
+        Real inv_dS = 1.0 / (SR - SL);
+        for (int k = 0; k < 5; ++k) {
+            flux[k] = (SR * FL[k] - SL * FR[k] + SL * SR * (qR[k] - qL[k])) * inv_dS;
+        }
+        return;
+    }
+
+    // S* = [ (p_R-p_L)*|S|² + dL*U_L - dR*U_R ] / (dL - dR)
+    Real S_star = ((pR - pL) * absS * absS + dL * UL - dR * UR) / denom;
+
+    // ---- 5a. Robustness: clamp S* to [SL, SR] ----
+    S_star = std::max(SL, std::min(SR, S_star));
+
+    // ---- 6. Star-state flux ----
+
+    auto fallback_hll = [&]() {
+        Real inv_dS = 1.0 / (SR - SL);
+        for (int k = 0; k < 5; ++k) {
+            flux[k] = (SR * FL[k] - SL * FR[k] + SL * SR * (qR[k] - qL[k])) * inv_dS;
+        }
+    };
+
+    if (S_star >= 0.0) {
+        // Left star region (S_L < 0 =< S_star)
+        Real rho_star = dL / (SL - S_star);
+        Real p_star   = pL + dL * (S_star - UL) * inv_absS2;
+
+        // Fall back to HLL if star state is non-physical
+        if (rho_star <= 0.0 || p_star <= 0.0) {
+            fallback_hll();
+            return;
+        }
+
+        Real u_star = uL + (S_star - UL) * Sx * inv_absS2;
+        Real v_star = vL + (S_star - UL) * Sy * inv_absS2;
+        Real w_star = wL + (S_star - UL) * Sz * inv_absS2;
+
+        Real ke_star = 0.5 * (u_star*u_star + v_star*v_star + w_star*w_star);
+        Real E_star  = p_star / (rho_star * (gamma - 1.0)) + ke_star;
+
+        flux[0] = rho_star * S_star;
+        flux[1] = rho_star * u_star * S_star + p_star * Sx;
+        flux[2] = rho_star * v_star * S_star + p_star * Sy;
+        flux[3] = rho_star * w_star * S_star + p_star * Sz;
+        flux[4] = (rho_star * E_star + p_star) * S_star;
+    } else {
+        // Right star region (S_star < 0 < S_R)
+        Real rho_star = dR / (SR - S_star);
+        Real p_star   = pR + dR * (S_star - UR) * inv_absS2;
+
+        // Fall back to HLL if star state is non-physical
+        if (rho_star <= 0.0 || p_star <= 0.0) {
+            fallback_hll();
+            return;
+        }
+
+        Real u_star = uR + (S_star - UR) * Sx * inv_absS2;
+        Real v_star = vR + (S_star - UR) * Sy * inv_absS2;
+        Real w_star = wR + (S_star - UR) * Sz * inv_absS2;
+
+        Real ke_star = 0.5 * (u_star*u_star + v_star*v_star + w_star*w_star);
+        Real E_star  = p_star / (rho_star * (gamma - 1.0)) + ke_star;
+
+        flux[0] = rho_star * S_star;
+        flux[1] = rho_star * u_star * S_star + p_star * Sx;
+        flux[2] = rho_star * v_star * S_star + p_star * Sy;
+        flux[3] = rho_star * w_star * S_star + p_star * Sz;
+        flux[4] = (rho_star * E_star + p_star) * S_star;
+    }
+}
+
+} // namespace detail
+
+// --- Directional solve methods ---
+
+inline void RiemannSolverHLLC::solve_xi  (LocalBlock& lb, const Config& cfg) const { detail::solve_xi_impl  (lb, cfg.gamma, cfg.entropy_fix_eps, detail::hllc_flux); }
+inline void RiemannSolverHLLC::solve_eta (LocalBlock& lb, const Config& cfg) const { detail::solve_eta_impl (lb, cfg.gamma, cfg.entropy_fix_eps, detail::hllc_flux); }
+inline void RiemannSolverHLLC::solve_zeta(LocalBlock& lb, const Config& cfg) const { detail::solve_zeta_impl(lb, cfg.gamma, cfg.entropy_fix_eps, detail::hllc_flux); }

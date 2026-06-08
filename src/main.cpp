@@ -1,5 +1,6 @@
 #include "wcns_v2/core/config.h"
 #include "wcns_v2/core/residual.h"
+#include "wcns_v2/core/history_monitor.h"
 #include "wcns_v2/field/field.h"
 #include "wcns_v2/io/config_reader.h"
 #include "wcns_v2/init/flow_initializer.h"
@@ -124,13 +125,20 @@ int main(int argc, char* argv[]) {
         // ================================================================
         // 4. Boundary conditions + halo exchange (primitive variables)
         // ================================================================
+        // Correct ordering: face ghost → halo exchange → edge/corner ghost.
+        // Edge/corner ghost fixup needs valid MPI-split ghost data, so the
+        // halo exchange must happen BEFORE edge/corner (but AFTER face ghost).
         if (ParallelEnv::is_master()) {
             std::cout << "Applying boundary conditions...\n";
         }
         for (auto& lb : blocks) {
-            BoundaryConditionApplier::apply_all(lb, cfg);
+            BoundaryConditionApplier::apply_face_ghost(lb, cfg);
         }
         pm.exchange_all_halos(blocks);
+        for (auto& lb : blocks) {
+            BoundaryConditionApplier::apply_edge_ghost(lb);
+            BoundaryConditionApplier::apply_corner_ghost(lb);
+        }
 
         // ★ Critical: convert prim → cons so WCNS interpolation sees
         //   correct conservative ghost-cell values from the start.
@@ -140,6 +148,16 @@ int main(int argc, char* argv[]) {
 
         if (ParallelEnv::is_master()) {
             std::cout << "Initialization complete.\n";
+        }
+
+        // ---- Write initial flow field (iter=0) ----
+        {
+            constexpr Int iter0 = 0;
+            constexpr Real time0 = 0.0;
+            if (ParallelEnv::is_master()) {
+                std::cout << "Writing initial solution (iter=0)...\n";
+            }
+            SolutionWriter::write(blocks, cfg, iter0, time0);
         }
 
         // ================================================================
@@ -155,13 +173,31 @@ int main(int argc, char* argv[]) {
         // ================================================================
         // 6. Open residual log file (rank 0 only)
         // ================================================================
+        std::string res_path = "residual.dat";
+        std::string hist_path = "history.dat";
+        if (!cfg.output_dir.empty()) {
+            res_path  = cfg.output_dir + "/residual.dat";
+            hist_path = cfg.output_dir + "/history.dat";
+        }
+
         std::ofstream res_file;
         if (ParallelEnv::is_master()) {
-            res_file.open("residual.dat");
+            res_file.open(res_path);
             if (!res_file.is_open()) {
-                throw std::runtime_error("Cannot open residual.dat for writing");
+                throw std::runtime_error("Cannot open " + res_path + " for writing");
             }
             Residual::write_header(res_file);
+        }
+
+        // ---- History monitor: cross-section average velocity ----
+        std::vector<Real> monitor_x_locations = {0.0, M_PI};
+        std::ofstream hist_file;
+        if (ParallelEnv::is_master()) {
+            hist_file.open(hist_path);
+            if (!hist_file.is_open()) {
+                throw std::runtime_error("Cannot open " + hist_path + " for writing");
+            }
+            HistoryMonitor::write_header(hist_file, monitor_x_locations);
         }
 
         // ================================================================
@@ -171,6 +207,16 @@ int main(int argc, char* argv[]) {
         Real last_output_time = 0.0;
         bool converged       = false;
         Int iter             = 0;
+
+        // ---- Log initial history at iter=0 ----
+        {
+            auto section_avgs = HistoryMonitor::compute_averages(blocks, monitor_x_locations);
+            if (ParallelEnv::is_master()) {
+                HistoryMonitor::log(hist_file, 0, 0.0, 0.0, section_avgs);
+                std::cout << "Initial U_avg(x=0) = " << section_avgs[0]
+                          << ", U_avg(x=pi) = " << section_avgs[1] << "\n";
+            }
+        }
 
         if (ParallelEnv::is_master()) {
             std::cout << "\n========== Starting Time Loop ==========\n"
@@ -242,9 +288,8 @@ int main(int argc, char* argv[]) {
                 }
 
                 // Exchange inviscid face-flux halos at connectivity boundaries
-                if (!is_local) {
-                    pm.exchange_flux_halos(blocks);
-                }
+                // (also handles same-block periodic connections)
+                pm.exchange_flux_halos(blocks);
 
                 // 6th-order centered difference → inviscid RHS (writes to rhs)
                 for (auto& lb : blocks) {
@@ -270,9 +315,7 @@ int main(int argc, char* argv[]) {
                     }
 
                     // 5b-exchange: gradient ghost cells
-                    if (!is_local) {
-                        pm.exchange_gradient_halos(blocks);
-                    }
+                    pm.exchange_gradient_halos(blocks);
 
                     // 5c: Compute cell-center Cartesian viscous flux vectors
                     for (auto& lb : blocks) {
@@ -280,9 +323,7 @@ int main(int argc, char* argv[]) {
                     }
 
                     // 5c-exchange: viscous flux ghost cells
-                    if (!is_local) {
-                        pm.exchange_viscous_flux_halos(blocks);
-                    }
+                    pm.exchange_viscous_flux_halos(blocks);
 
                     // 5d: Assemble viscous face fluxes (3 directions)
                     for (int dir = 0; dir < 3; ++dir) {
@@ -320,22 +361,30 @@ int main(int argc, char* argv[]) {
                 }
 
                 // ========================================================
-                // Post-stage: cons → prim, BC, halo, prim → cons
+                // Post-stage: cons → prim, face-BC, halo, edge/corner-BC, prim → cons
                 // ========================================================
+                // Important: halo exchange must happen BETWEEN face-BC and
+                // edge/corner-BC so that MPI-split ghost data is available
+                // for the edge/corner ghost fixup.
 
                 // Convert updated conservative variables to primitive
                 for (auto& lb : blocks) {
                     lb.field.cons_to_prim(cfg.gamma);
                 }
 
-                // Apply boundary conditions (fills prim ghost cells on BC faces)
+                // Apply face boundary conditions (fills prim ghost cells on BC faces)
                 for (auto& lb : blocks) {
-                    BoundaryConditionApplier::apply_all(lb, cfg);
+                    BoundaryConditionApplier::apply_face_ghost(lb, cfg);
                 }
 
-                // Halo exchange for primitive variables
-                if (!is_local) {
-                    pm.exchange_all_halos(blocks);
+                // Halo exchange for primitive variables (fills MPI-split ghost cells)
+                // Exchange primitive-variable halos (handles same-block periodic too)
+                pm.exchange_all_halos(blocks);
+
+                // Apply edge + corner ghost fixup (now has valid MPI ghost data)
+                for (auto& lb : blocks) {
+                    BoundaryConditionApplier::apply_edge_ghost(lb);
+                    BoundaryConditionApplier::apply_corner_ghost(lb);
                 }
 
                 // ★ Critical: convert prim → cons so that conservative ghost
@@ -372,6 +421,16 @@ int main(int argc, char* argv[]) {
                         // Write to residual log
                         if (ParallelEnv::is_master()) {
                             Residual::log(res_file, iter, dt, res, mon);
+                        }
+
+                        // Cross-section average velocity monitoring
+                        {
+                            auto section_avgs = HistoryMonitor::compute_averages(
+                                blocks, monitor_x_locations);
+                            if (ParallelEnv::is_master()) {
+                                HistoryMonitor::log(hist_file, iter, time, dt,
+                                                     section_avgs);
+                            }
                         }
 
                         // Convergence check
@@ -446,9 +505,12 @@ int main(int argc, char* argv[]) {
         SolutionWriter::write(blocks, cfg, iter, time);
         RestartWriter::write(blocks, cfg, iter, time);
 
-        // Close residual log
+        // Close residual log and history log
         if (res_file.is_open()) {
             res_file.close();
+        }
+        if (hist_file.is_open()) {
+            hist_file.close();
         }
 
     } catch (const std::exception& e) {

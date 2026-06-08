@@ -72,6 +72,7 @@ public:
 
     // ---- Metadata ----
     std::string name;   // zone name from CGNS
+    std::string metrics_type = "auto";  ///< "auto" = SCMM from grid, "uniform" = analytical Cartesian
 
     Grid();
 
@@ -96,7 +97,14 @@ public:
     /// Requires ghost layers to be already extended and cell-center
     /// coordinates to be valid.  Metric terms are stored in the
     /// met_xi_*, met_eta_*, met_zeta_* arrays; Jacobian in jacobian.
+    ///
+    /// If metrics_type == "uniform", uses analytical uniform Cartesian
+    /// metrics directly (ignoring the grid geometry).
     void compute_metrics();
+
+    /// Compute analytical metrics for a uniform Cartesian grid.
+    /// dx, dy, dz are inferred from interior cell centers.
+    void compute_metrics_uniform();
 
     /// Interpolate cell-center metrics to face centers (half-nodes).
     /// Populates face_xi_*, face_eta_*, face_zeta_* arrays.

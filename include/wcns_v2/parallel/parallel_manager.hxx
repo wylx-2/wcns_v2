@@ -65,6 +65,7 @@ inline void ParallelManager::initialize(
 
     // ---- Step 2d: Compute metrics on all zones ----
     for (auto& z : zones) {
+        z.metrics_type = cfg.grid_metrics;
         z.compute_metrics();
         z.compute_face_metrics();
     }

@@ -89,51 +89,49 @@ inline void RestartWriter::write(const std::vector<LocalBlock>& blocks,
         os.close();
     }
 
-    // ---- Index file (rank 0 only) ----
-    if (my_rank == 0) {
-        // Collect block_id → rank mapping from all ranks
-        // In this initial implementation, each rank writes its own blocks;
-        // we broadcast metadata so rank 0 knows all assignments.
+    // ---- Index file ----
+    // MPI collectives must be called by ALL ranks, not just rank 0.
+    Int n_local = static_cast<Int>(blocks.size());
 
-        // First, each rank sends (n_local, block_ids) to rank 0
-        Int n_local = static_cast<Int>(blocks.size());
+    // Pack local block IDs
+    std::vector<Int> local_bids;
+    local_bids.reserve(static_cast<std::size_t>(n_local));
+    for (const auto& lb : blocks)
+        local_bids.push_back(lb.block_id);
 
-        std::vector<Int> all_counts;
-        std::vector<Int> all_block_ids;
+    // Gather counts and block IDs from all ranks to rank 0
+    std::vector<Int> all_counts;
+    std::vector<Int> all_block_ids;
 
-        if (nprocs > 1) {
-            all_counts.resize(static_cast<std::size_t>(nprocs));
-            MPI_Gather(&n_local, 1, MPI_INT, all_counts.data(), 1,
-                       MPI_INT, 0, ParallelEnv::communicator());
+    if (nprocs > 1) {
+        all_counts.resize(static_cast<std::size_t>(nprocs));
+        MPI_Gather(&n_local, 1, MPI_INT, all_counts.data(), 1,
+                   MPI_INT, 0, ParallelEnv::communicator());
 
-            // Gather block IDs
-            std::vector<Int> local_bids;
-            local_bids.reserve(static_cast<std::size_t>(n_local));
-            for (const auto& lb : blocks)
-                local_bids.push_back(lb.block_id);
-
-            std::vector<Int> recv_counts(static_cast<std::size_t>(nprocs));
-            std::vector<Int> recv_displs(static_cast<std::size_t>(nprocs));
-            Int total_bids = 0;
+        std::vector<Int> recv_counts(static_cast<std::size_t>(nprocs));
+        std::vector<Int> recv_displs(static_cast<std::size_t>(nprocs));
+        Int total_bids = 0;
+        if (my_rank == 0) {
             for (int r = 0; r < nprocs; ++r) {
                 recv_counts[static_cast<std::size_t>(r)] =
                     all_counts[static_cast<std::size_t>(r)];
                 recv_displs[static_cast<std::size_t>(r)] = total_bids;
                 total_bids += recv_counts[static_cast<std::size_t>(r)];
             }
-
             all_block_ids.resize(static_cast<std::size_t>(total_bids));
-            MPI_Gatherv(local_bids.data(), n_local, MPI_INT,
-                        all_block_ids.data(), recv_counts.data(),
-                        recv_displs.data(), MPI_INT, 0,
-                        ParallelEnv::communicator());
-        } else {
-            all_counts.push_back(n_local);
-            for (const auto& lb : blocks)
-                all_block_ids.push_back(lb.block_id);
         }
 
-        // Write index file
+        MPI_Gatherv(local_bids.data(), n_local, MPI_INT,
+                    all_block_ids.data(), recv_counts.data(),
+                    recv_displs.data(), MPI_INT, 0,
+                    ParallelEnv::communicator());
+    } else {
+        all_counts.push_back(n_local);
+        all_block_ids = local_bids;
+    }
+
+    // Only rank 0 writes the index file
+    if (my_rank == 0) {
         auto fname = restart_basename(cfg.output_dir, iter) + ".bin";
         std::ofstream os(fname, std::ios::binary);
         if (!os.is_open()) {

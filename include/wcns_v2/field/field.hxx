@@ -182,7 +182,10 @@ inline void Field::cons_to_prim(Real gamma) {
         prim.u(i,j,k)   = rhou * inv_rho;
         prim.v(i,j,k)   = rhov * inv_rho;
         prim.w(i,j,k)   = rhow * inv_rho;
-        prim.p(i,j,k)   = gm1 * (rhoE - ke);
+        // Clamp pressure to a small positive floor to prevent
+        // negative pressures from accumulated numerical errors
+        // (can occur in strong expansion regions with HLLC-type solvers).
+        prim.p(i,j,k)   = std::max(gm1 * (rhoE - ke), Real(1e-14));
     }}}
 }
 

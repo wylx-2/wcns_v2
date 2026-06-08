@@ -137,7 +137,47 @@ inline LocalBlock LocalBlock::from_sub_zone(
     lb.grid.compute_cell_centers();
     lb.grid.compute_cell_volumes();
 
+    // ---- Copy periodic connectivity from full zone (must be BEFORE metrics) ----
+    // The sub-block's grid needs periodic connection entries so that
+    // build_face_periodic() correctly identifies KMIN/KMAX as periodic
+    // for metric derivative computations.  Without this, the coordinate
+    // derivatives near periodic boundaries use wrong one-sided stencils.
+    // Must be done before compute_metrics/face_metrics.
+    for (Int c = 0; c < full_zone.connections.count(); ++c) {
+        const Connectivity& fc = full_zone.connections[c];
+        if (!fc.is_periodic) continue;
+
+        if (fc.kmin == fc.kmax) {
+            bool is_kmin = (fc.kmin == 1);
+            bool is_kmax = (fc.kmin == static_cast<Int>(full_zone.nk_core));
+            if ((is_kmin && sub.ck_min == 0) || (is_kmax && sub.ck_max == nck_sub_core - 1)) {
+                Connectivity sc = fc;
+                sc.kmin = sc.kmax = (is_kmin ? 1 : static_cast<Int>(lb.grid.nk_core));
+                lb.grid.connections.add(sc);
+            }
+        }
+        if (fc.imin == fc.imax) {
+            bool is_imin = (fc.imin == 1);
+            bool is_imax = (fc.imin == static_cast<Int>(full_zone.ni_core));
+            if ((is_imin && sub.ci_min == 0) || (is_imax && sub.ci_max == nci_sub_core - 1)) {
+                Connectivity sc = fc;
+                sc.imin = sc.imax = (is_imin ? 1 : static_cast<Int>(lb.grid.ni_core));
+                lb.grid.connections.add(sc);
+            }
+        }
+        if (fc.jmin == fc.jmax) {
+            bool is_jmin = (fc.jmin == 1);
+            bool is_jmax = (fc.jmin == static_cast<Int>(full_zone.nj_core));
+            if ((is_jmin && sub.cj_min == 0) || (is_jmax && sub.cj_max == ncj_sub_core - 1)) {
+                Connectivity sc = fc;
+                sc.jmin = sc.jmax = (is_jmin ? 1 : static_cast<Int>(lb.grid.nj_core));
+                lb.grid.connections.add(sc);
+            }
+        }
+    }
+
     // ---- Compute metrics ----
+    lb.grid.metrics_type = full_zone.metrics_type;  // inherit from full zone
     lb.grid.compute_metrics();
     lb.grid.compute_face_metrics();
 
@@ -147,13 +187,30 @@ inline LocalBlock LocalBlock::from_sub_zone(
 
         // Determine if this BC overlaps with the sub-block's face
         // src.range is in node indices (1-based) of original core
-        // Map to 0-based cell range for comparison
+        // Map to 0-based cell range for comparison.
+        //
+        // For the face-normal (collapsed) dimension on MAX-side faces,
+        // the adjacent cell index is max_val - 2 (not max_val - 1).
+        // E.g. JMAX with jmin=jmax=nj (65 nodes) → cell nj-2 (63, 0-based).
+        // Using max_val - 1 gives one past the last core cell and would
+        // fail the overlap check for the topmost sub-block.
         Int src_ci_min = src.imin - 1;
         Int src_ci_max = src.imax - 1;
         Int src_cj_min = src.jmin - 1;
         Int src_cj_max = src.jmax - 1;
         Int src_ck_min = src.kmin - 1;
         Int src_ck_max = src.kmax - 1;
+
+        // Fix collapsed dimension for MAX-side faces:
+        //   face 1 (IMAX): imin=imax=ni → cell index ni-2
+        //   face 3 (JMAX): jmin=jmax=nj → cell index nj-2
+        //   face 5 (KMAX): kmin=kmax=nk → cell index nk-2
+        switch (src.face) {
+        case 1: src_ci_min = src_ci_max = src.imax - 2; break;
+        case 3: src_cj_min = src_cj_max = src.jmax - 2; break;
+        case 5: src_ck_min = src_ck_max = src.kmax - 2; break;
+        default: break;
+        }
 
         // Check overlap with sub-block's cell range (also 0-based in original space)
         bool overlap =
@@ -179,9 +236,6 @@ inline LocalBlock LocalBlock::from_sub_zone(
             lb.grid.bc.add_patch(patch);
         }
     }
-
-    // ---- Periodic connectivity is handled in build_neighbors via the full zone ----
-    // No need to copy here — neighbor info is built separately.
 
     // ---- Allocate field ----
     lb.field.allocate(lb.grid.nci, lb.grid.ncj, lb.grid.nck);
@@ -219,7 +273,10 @@ inline void LocalBlock::build_neighbors(
                 // For single-zone periodic, target is self
                 ni.target_rank  = -1;  // same process
                 ni.target_block = -1;  // will be resolved later
-                ni.target_face  = face; // will be resolved from connectivity
+                // Periodic: the opposite face provides the interior data source.
+                // For a single-zone periodic connection (Imin↔Imax etc.),
+                // ghost cells at this face are filled from the opposite face.
+                ni.target_face  = (face % 2 == 0) ? face + 1 : face - 1;
             } else {
                 // BC face — no halo exchange needed
                 ni.active = false;

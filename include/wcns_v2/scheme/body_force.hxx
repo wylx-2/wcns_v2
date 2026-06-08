@@ -24,7 +24,6 @@ inline void BodyForce::add_to_rhs(LocalBlock& lb, const Config& cfg) {
     }
 
     auto& f = lb.field;
-    auto& J = lb.grid.jacobian;
 
     const Int nci = f.ni();
     const Int ncj = f.nj();
@@ -36,7 +35,9 @@ inline void BodyForce::add_to_rhs(LocalBlock& lb, const Config& cfg) {
     const Int k0 = 3, k1 = nck - 4;
 
     // Physical source: S = [0, ρ·f_x, ρ·f_y, ρ·f_z, ρ·f·v]^T
-    // Convert to computational space: rhs += J⁻¹ · S
+    // Note: rhs stores ∂Q/∂t (physical time derivative), so the source term
+    // is added directly WITHOUT the 1/J factor.  (The inviscid and viscous
+    // RHS use 1/J because their flux divergences are in computational space.)
     for (Int k = k0; k <= k1; ++k) {
     for (Int j = j0; j <= j1; ++j) {
     for (Int i = i0; i <= i1; ++i) {
@@ -44,12 +45,13 @@ inline void BodyForce::add_to_rhs(LocalBlock& lb, const Config& cfg) {
         Real u    = f.prim.u(i,j,k);
         Real v    = f.prim.v(i,j,k);
         Real w    = f.prim.w(i,j,k);
-        Real invJ = 1.0 / J(i,j,k);
 
         // S_rho  = 0
-        f.rhs.rhou(i,j,k) += invJ * rho * fx;
-        f.rhs.rhov(i,j,k) += invJ * rho * fy;
-        f.rhs.rhow(i,j,k) += invJ * rho * fz;
-        f.rhs.rhoE(i,j,k) += invJ * rho * (fx * u + fy * v + fz * w);
+        f.rhs.rhou(i,j,k) += rho * fx;
+        f.rhs.rhov(i,j,k) += rho * fy;
+        f.rhs.rhow(i,j,k) += rho * fz;
+        if (cfg.body_force_energy) {
+            f.rhs.rhoE(i,j,k) += rho * (fx * u + fy * v + fz * w);
+        }
     }}}
 }

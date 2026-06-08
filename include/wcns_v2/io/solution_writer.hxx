@@ -34,7 +34,7 @@ struct BlockMeta {
     Int ni_core;    // interior cells in i
     Int nj_core;    // interior cells in j
     Int nk_core;    // interior cells in k
-    Int data_size;  // number of Reals = ni_core * nj_core * nk_core * 8
+    Int data_size;  // number of Reals = ni_core * nj_core * nk_core * 9
 };
 
 // ============================================================================
@@ -42,6 +42,7 @@ struct BlockMeta {
 // ============================================================================
 
 inline void TecplotWriter::write(const std::vector<LocalBlock>& blocks,
+                                  const Config& cfg,
                                   const std::string& filename,
                                   Int iter, Real time) {
 
@@ -59,7 +60,7 @@ inline void TecplotWriter::write(const std::vector<LocalBlock>& blocks,
         m.ni_core  = lb.field.ni() - 2 * ng;
         m.nj_core  = lb.field.nj() - 2 * ng;
         m.nk_core  = lb.field.nk() - 2 * ng;
-        m.data_size = m.ni_core * m.nj_core * m.nk_core * 8;
+        m.data_size = m.ni_core * m.nj_core * m.nk_core * 9;
         local_meta.push_back(m);
         local_total_size += m.data_size;
     }
@@ -83,6 +84,8 @@ inline void TecplotWriter::write(const std::vector<LocalBlock>& blocks,
         const Int k0 = ng;
         const Int k1 = f.nk() - 1 - ng;
 
+        Real gm2 = cfg.gamma * cfg.Mach * cfg.Mach;  // 1 / eos_factor
+
         for (Int k = k0; k <= k1; ++k) {
         for (Int j = j0; j <= j1; ++j) {
         for (Int i = i0; i <= i1; ++i) {
@@ -94,6 +97,7 @@ inline void TecplotWriter::write(const std::vector<LocalBlock>& blocks,
             local_data.push_back(f.prim.v(i,j,k));
             local_data.push_back(f.prim.w(i,j,k));
             local_data.push_back(f.prim.p(i,j,k));
+            local_data.push_back(f.prim.p(i,j,k) * gm2 / f.prim.rho(i,j,k));
         }}}
     }
 
@@ -111,7 +115,7 @@ inline void TecplotWriter::write(const std::vector<LocalBlock>& blocks,
         os << "TITLE = \"WCNS v2 Solution — iter=" << iter
            << ", time=" << time << "\"\n";
         os << "VARIABLES = \"X\", \"Y\", \"Z\", "
-           << "\"rho\", \"u\", \"v\", \"w\", \"p\"\n";
+           << "\"rho\", \"u\", \"v\", \"w\", \"p\", \"T\"\n";
 
         const Real* ptr = local_data.data();
         for (std::size_t ib = 0; ib < blocks.size(); ++ib) {
@@ -123,11 +127,11 @@ inline void TecplotWriter::write(const std::vector<LocalBlock>& blocks,
                << ", DATAPACKING=POINT\n";
 
             Int n_vals = m.data_size;
-            for (Int v = 0; v < n_vals; v += 8) {
+            for (Int v = 0; v < n_vals; v += 9) {
                 os << " "  << ptr[0] << " " << ptr[1] << " " << ptr[2]
                    << " "  << ptr[3] << " " << ptr[4] << " " << ptr[5]
-                   << " "  << ptr[6] << " " << ptr[7] << "\n";
-                ptr += 8;
+                   << " "  << ptr[6] << " " << ptr[7] << " " << ptr[8] << "\n";
+                ptr += 9;
             }
         }
         os.close();
@@ -246,7 +250,7 @@ inline void TecplotWriter::write(const std::vector<LocalBlock>& blocks,
     os << "TITLE = \"WCNS v2 Solution — iter=" << iter
        << ", time=" << time << "\"\n";
     os << "VARIABLES = \"X\", \"Y\", \"Z\", "
-       << "\"rho\", \"u\", \"v\", \"w\", \"p\"\n";
+       << "\"rho\", \"u\", \"v\", \"w\", \"p\", \"T\"\n";
 
     for (const auto& blk : all_blocks) {
         os << "ZONE T=\"block_" << blk.block_id
@@ -257,11 +261,11 @@ inline void TecplotWriter::write(const std::vector<LocalBlock>& blocks,
 
         const Real* ptr = global_data.data() + blk.data_offset;
         Int n_vals = blk.data_size;
-        for (Int v = 0; v < n_vals; v += 8) {
+        for (Int v = 0; v < n_vals; v += 9) {
             os << " "  << ptr[0] << " " << ptr[1] << " " << ptr[2]
                << " "  << ptr[3] << " " << ptr[4] << " " << ptr[5]
-               << " "  << ptr[6] << " " << ptr[7] << "\n";
-            ptr += 8;
+               << " "  << ptr[6] << " " << ptr[7] << " " << ptr[8] << "\n";
+            ptr += 9;
         }
     }
 
@@ -297,7 +301,7 @@ inline void SolutionWriter::write(const std::vector<LocalBlock>& blocks,
     auto filename = make_filename(cfg.output_dir, "sol", iter, ".plt");
 
     if (cfg.output_format == "tecplot") {
-        TecplotWriter::write(blocks, filename, iter, time);
+        TecplotWriter::write(blocks, cfg, filename, iter, time);
     } else if (cfg.output_format == "cgns") {
         CgnsWriter::write(blocks, filename, iter, time);
     } else if (cfg.output_format == "vtk") {

@@ -197,7 +197,9 @@ void ConfigReader::set_control(Config& cfg, const std::string& key,
 
 void ConfigReader::set_scheme(Config& cfg, const std::string& key,
                                const std::string& value) {
-    if (key == "interp_vars") {
+    if (key == "grid_metrics") {
+        cfg.grid_metrics = value;
+    } else if (key == "interp_vars") {
         cfg.interp_vars = value;
     } else if (key == "interp_type") {
         cfg.interp_type = value;
@@ -241,14 +243,30 @@ void ConfigReader::set_initialization(Config& cfg, const std::string& key,
         cfg.body_force_y = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "body_force_z") {
         cfg.body_force_z = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "body_force_energy") {
+        cfg.body_force_energy = (value == "true" || value == "1" || value == "yes");
     } else if (key == "wall_type") {
         cfg.wall_type = value;
+    } else if (key == "wall_temperature") {
+        cfg.wall_temperature = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "riemann_config") {
         cfg.riemann_config = static_cast<Int>(std::atoi(value.c_str()));
     } else if (key == "riemann_x_split") {
         cfg.riemann_x_split = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "riemann_y_split") {
         cfg.riemann_y_split = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "isentropic_vortex_strength") {
+        cfg.isentropic_vortex_strength = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "isentropic_vortex_radius") {
+        cfg.isentropic_vortex_radius = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "isentropic_vortex_xc") {
+        cfg.isentropic_vortex_xc = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "isentropic_vortex_yc") {
+        cfg.isentropic_vortex_yc = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "isentropic_vortex_u_inf") {
+        cfg.isentropic_vortex_u_inf = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "isentropic_vortex_v_inf") {
+        cfg.isentropic_vortex_v_inf = static_cast<Real>(std::atof(value.c_str()));
     } else {
         std::cerr << "ConfigReader: warning: unknown key \""
                   << key << "\" in [initialization] section\n";

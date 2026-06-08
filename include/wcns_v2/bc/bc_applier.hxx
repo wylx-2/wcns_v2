@@ -293,6 +293,8 @@ inline void BoundaryConditionApplier::apply_bc_on_face(
     case BCType::Wall:
         if (cfg.wall_type == "slip") {
             apply_wall_slip(face, lb, j0, j1, k0, k1);
+        } else if (cfg.wall_type == "isothermal_noslip") {
+            apply_wall_noslip_isothermal(face, lb, cfg, j0, j1, k0, k1);
         } else {
             apply_wall_noslip(face, lb, j0, j1, k0, k1);
         }
@@ -565,6 +567,105 @@ inline void BoundaryConditionApplier::apply_wall_noslip(
                 lb.field.prim.v(j, k, gi)   = -v_mir;
                 lb.field.prim.w(j, k, gi)   = -w_mir;
                 lb.field.prim.p(j, k, gi)   = p_mir;
+                break;
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Wall — no-slip, isothermal (odd velocity reflection + prescribed T)
+// ============================================================================
+
+inline void BoundaryConditionApplier::apply_wall_noslip_isothermal(
+        int face, LocalBlock& lb, const Config& cfg,
+        Int j0, Int j1, Int k0, Int k1) {
+
+    Int ng  = lb.grid.ng;
+    Int nci = lb.grid.nci;
+    Int ncj = lb.grid.ncj;
+    Int nck = lb.grid.nck;
+
+    Real T_wall = cfg.wall_temperature;
+    Real eos_factor = cfg.eos_factor();  // 1/(gamma*Mach^2) for non-dimensional
+
+    for (Int d = 0; d < ng; ++d) {
+        Int gi, mi;  // ghost index, mirror interior index
+        switch (face) {
+        case 0: gi = d;              mi = ng + (ng - 1 - d);    break;
+        case 1: gi = nci - 1 - d;    mi = nci - 1 - ng - (ng - 1 - d); break;
+        case 2: gi = d;              mi = ng + (ng - 1 - d);    break;
+        case 3: gi = ncj - 1 - d;    mi = ncj - 1 - ng - (ng - 1 - d); break;
+        case 4: gi = d;              mi = ng + (ng - 1 - d);    break;
+        case 5: gi = nck - 1 - d;    mi = nck - 1 - ng - (ng - 1 - d); break;
+        default: continue;
+        }
+
+        for (Int k = k0; k <= k1; ++k)
+        for (Int j = j0; j <= j1; ++j) {
+
+            Real rho_mir = 0, u_mir = 0, v_mir = 0, w_mir = 0, p_mir = 0;
+            switch (face) {
+            case 0: case 1:
+                rho_mir = lb.field.prim.rho(mi, j, k);
+                u_mir   = lb.field.prim.u(mi, j, k);
+                v_mir   = lb.field.prim.v(mi, j, k);
+                w_mir   = lb.field.prim.w(mi, j, k);
+                p_mir   = lb.field.prim.p(mi, j, k);
+                break;
+            case 2: case 3:
+                rho_mir = lb.field.prim.rho(j, mi, k);
+                u_mir   = lb.field.prim.u(j, mi, k);
+                v_mir   = lb.field.prim.v(j, mi, k);
+                w_mir   = lb.field.prim.w(j, mi, k);
+                p_mir   = lb.field.prim.p(j, mi, k);
+                break;
+            case 4: case 5:
+            default:
+                rho_mir = lb.field.prim.rho(j, k, mi);
+                u_mir   = lb.field.prim.u(j, k, mi);
+                v_mir   = lb.field.prim.v(j, k, mi);
+                w_mir   = lb.field.prim.w(j, k, mi);
+                p_mir   = lb.field.prim.p(j, k, mi);
+                break;
+            }
+
+            // No-slip: odd reflection for all velocity components
+            // Pressure: zero-gradient (copy from mirror)
+            // Temperature: linear extrapolation so that wall-face T = T_wall
+            //   T_mir is at interior cell adjacent to wall
+            //   T_g + T_mir = 2*T_wall  =>  T_g = 2*T_wall - T_mir
+            Real T_mir = p_mir / (rho_mir * eos_factor);  // T* = p* / (rho* * eos_factor)
+            Real T_g   = 2.0 * T_wall - T_mir;
+
+            // Clamp ghost temperature to avoid non-physical values
+            if (T_g <= 0.0) T_g = T_wall;
+
+            // Density from EOS: rho = p / (T * eos_factor)
+            Real rho_g = p_mir / (T_g * eos_factor);
+            Real p_g   = p_mir;
+
+            switch (face) {
+            case 0: case 1:
+                lb.field.prim.rho(gi, j, k) = rho_g;
+                lb.field.prim.u(gi, j, k)   = -u_mir;
+                lb.field.prim.v(gi, j, k)   = -v_mir;
+                lb.field.prim.w(gi, j, k)   = -w_mir;
+                lb.field.prim.p(gi, j, k)   = p_g;
+                break;
+            case 2: case 3:
+                lb.field.prim.rho(j, gi, k) = rho_g;
+                lb.field.prim.u(j, gi, k)   = -u_mir;
+                lb.field.prim.v(j, gi, k)   = -v_mir;
+                lb.field.prim.w(j, gi, k)   = -w_mir;
+                lb.field.prim.p(j, gi, k)   = p_g;
+                break;
+            case 4: case 5:
+                lb.field.prim.rho(j, k, gi) = rho_g;
+                lb.field.prim.u(j, k, gi)   = -u_mir;
+                lb.field.prim.v(j, k, gi)   = -v_mir;
+                lb.field.prim.w(j, k, gi)   = -w_mir;
+                lb.field.prim.p(j, k, gi)   = p_g;
                 break;
             }
         }
@@ -847,67 +948,28 @@ inline void BoundaryConditionApplier::apply_edge_ghost(LocalBlock& lb) {
         pa = 0.5 * (p1 + p2);
     };
 
-    // Lambda: get value from face ghost cell at offset from edge
-    // dir == 0: value from face A (first face of the edge)
-    // dir == 1: value from face B (second face of the edge)
+    // Lambda: get value from face ghost cell at edge intersection
+    // gi,gj,gk are Cartesian cell indices (i,j,k) — MultiArray3D always
+    // uses (i,j,k) ordering regardless of which face we're looking at.
     auto get_face_val = [&](int face, Int gi, Int gj, Int gk,
                             Real& r, Real& u, Real& v, Real& w, Real& p) {
-        switch (face) {
-        case 0: case 1:
-            r = lb.field.prim.rho(gi, gj, gk);
-            u = lb.field.prim.u(gi, gj, gk);
-            v = lb.field.prim.v(gi, gj, gk);
-            w = lb.field.prim.w(gi, gj, gk);
-            p = lb.field.prim.p(gi, gj, gk);
-            break;
-        case 2: case 3:
-            r = lb.field.prim.rho(gj, gi, gk);
-            u = lb.field.prim.u(gj, gi, gk);
-            v = lb.field.prim.v(gj, gi, gk);
-            w = lb.field.prim.w(gj, gi, gk);
-            p = lb.field.prim.p(gj, gi, gk);
-            break;
-        case 4: case 5:
-        default:
-            r = lb.field.prim.rho(gj, gk, gi);
-            u = lb.field.prim.u(gj, gk, gi);
-            v = lb.field.prim.v(gj, gk, gi);
-            w = lb.field.prim.w(gj, gk, gi);
-            p = lb.field.prim.p(gj, gk, gi);
-            break;
-        }
+        (void)face;  // face parameter is for documentation; indexing is Cartesian
+        r = lb.field.prim.rho(gi, gj, gk);
+        u = lb.field.prim.u(gi, gj, gk);
+        v = lb.field.prim.v(gi, gj, gk);
+        w = lb.field.prim.w(gi, gj, gk);
+        p = lb.field.prim.p(gi, gj, gk);
     };
 
-    auto set_edge_val = [&](int face_a, int /*face_b*/,
+    auto set_edge_val = [&](int, int,
                             Int gi, Int gj, Int gk,
                             Real r, Real u, Real v, Real w, Real p) {
-        // Write using the coordinate convention of face_a
-        // (both faces index the same physical cell, just with different
-        //  index ordering — the cell is unambiguous from (gi,gj,gk) context)
-        // We write via face_a's convention.
-        switch (face_a) {
-        case 0: case 1:
-            lb.field.prim.rho(gi, gj, gk) = r;
-            lb.field.prim.u(gi, gj, gk) = u;
-            lb.field.prim.v(gi, gj, gk) = v;
-            lb.field.prim.w(gi, gj, gk) = w;
-            lb.field.prim.p(gi, gj, gk) = p;
-            break;
-        case 2: case 3:
-            lb.field.prim.rho(gj, gi, gk) = r;
-            lb.field.prim.u(gj, gi, gk) = u;
-            lb.field.prim.v(gj, gi, gk) = v;
-            lb.field.prim.w(gj, gi, gk) = w;
-            lb.field.prim.p(gj, gi, gk) = p;
-            break;
-        case 4: case 5:
-            lb.field.prim.rho(gj, gk, gi) = r;
-            lb.field.prim.u(gj, gk, gi) = u;
-            lb.field.prim.v(gj, gk, gi) = v;
-            lb.field.prim.w(gj, gk, gi) = w;
-            lb.field.prim.p(gj, gk, gi) = p;
-            break;
-        }
+        // Write using Cartesian indexing (i,j,k) — same for all faces
+        lb.field.prim.rho(gi, gj, gk) = r;
+        lb.field.prim.u(gi, gj, gk) = u;
+        lb.field.prim.v(gi, gj, gk) = v;
+        lb.field.prim.w(gi, gj, gk) = w;
+        lb.field.prim.p(gi, gj, gk) = p;
     };
 
     // Define all 12 edges: {{face_a, face_b}, ...}
