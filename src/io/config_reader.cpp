@@ -187,6 +187,8 @@ void ConfigReader::set_control(Config& cfg, const std::string& key,
         cfg.converge_tol = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "time_scheme") {
         cfg.time_scheme = value;  // keep as-is
+    } else if (key == "lu_sgs_kappa") {
+        cfg.lu_sgs_kappa = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "ng" || key == "ghost_layers") {
         cfg.ng = static_cast<Int>(std::atoi(value.c_str()));
     } else {

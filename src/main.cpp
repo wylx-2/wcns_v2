@@ -14,6 +14,7 @@
 #include "wcns_v2/scheme/viscid_rhs.h"
 #include "wcns_v2/scheme/body_force.h"
 #include "wcns_v2/time/time_integrator.h"
+#include "wcns_v2/time/lu_sgs.h"
 #include "wcns_v2/io/solution_writer.h"
 #include "wcns_v2/io/restart_writer.h"
 #include <cmath>
@@ -355,9 +356,15 @@ int main(int argc, char* argv[]) {
                 // ========================================================
                 // Time integration — advance conservative variables
                 // ========================================================
-                for (auto& lb : blocks) {
-                    TimeIntegrator::advance_stage(lb, cfg, dt, stage,
-                                                   lb.field.Q0);
+                if (cfg.time_scheme == "lu-sgs") {
+                    for (auto& lb : blocks) {
+                        LuSgs::advance(lb, cfg, dt);
+                    }
+                } else {
+                    for (auto& lb : blocks) {
+                        TimeIntegrator::advance_stage(lb, cfg, dt, stage,
+                                                       lb.field.Q0);
+                    }
                 }
 
                 // ========================================================

@@ -31,8 +31,8 @@ CTestTestfile.cmake
 _deps/
 
 # Core dumps
-core
-core.*
+/core
+/core.*
 
 # GDB
 .gdb_history
