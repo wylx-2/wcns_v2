@@ -1,4 +1,4 @@
-#include "wcns_v2/io/cgns_reader.h"
+#include "io/cgns_reader.h"
 #include <cgnslib.h>
 #include <cstring>
 #include <iostream>

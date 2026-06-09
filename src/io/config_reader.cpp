@@ -1,4 +1,4 @@
-#include "wcns_v2/io/config_reader.h"
+#include "io/config_reader.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
