@@ -114,51 +114,98 @@ int main(int argc, char* argv[]) {
         }
 
         // ================================================================
-        // 3. Flow field initialization
+        // 3. Flow field initialization (or restart)
         // ================================================================
-        if (ParallelEnv::is_master()) {
-            std::cout << "\n--- Flow Initialization: " << cfg.init_type << " ---\n";
-        }
-        for (auto& lb : blocks) {
-            FlowInitializer::initialize(lb, cfg);
-        }
+        Int restart_iter = 0;
+        Real restart_time = 0.0;
 
-        // ================================================================
-        // 4. Boundary conditions + halo exchange (primitive variables)
-        // ================================================================
-        // Correct ordering: face ghost → halo exchange → edge/corner ghost.
-        // Edge/corner ghost fixup needs valid MPI-split ghost data, so the
-        // halo exchange must happen BEFORE edge/corner (but AFTER face ghost).
-        if (ParallelEnv::is_master()) {
-            std::cout << "Applying boundary conditions...\n";
-        }
-        for (auto& lb : blocks) {
-            BoundaryConditionApplier::apply_face_ghost(lb, cfg);
-        }
-        pm.exchange_all_halos(blocks);
-        for (auto& lb : blocks) {
-            BoundaryConditionApplier::apply_edge_ghost(lb);
-            BoundaryConditionApplier::apply_corner_ghost(lb);
-        }
-
-        // ★ Critical: convert prim → cons so WCNS interpolation sees
-        //   correct conservative ghost-cell values from the start.
-        for (auto& lb : blocks) {
-            lb.field.prim_to_cons(cfg.gamma);
-        }
-
-        if (ParallelEnv::is_master()) {
-            std::cout << "Initialization complete.\n";
-        }
-
-        // ---- Write initial flow field (iter=0) ----
-        {
-            constexpr Int iter0 = 0;
-            constexpr Real time0 = 0.0;
+        if (!cfg.restart_file.empty()) {
+            // ---- Restart from checkpoint ----
             if (ParallelEnv::is_master()) {
-                std::cout << "Writing initial solution (iter=0)...\n";
+                std::cout << "\n--- Loading Restart: " << cfg.restart_file
+                          << " ---\n";
             }
-            SolutionWriter::write(blocks, cfg, iter0, time0);
+            auto [r_iter, r_time] = RestartWriter::read(cfg.restart_file,
+                                                          blocks, cfg);
+            restart_iter = r_iter;
+            restart_time = r_time;
+
+            // After reading conservative variables and converting to primitive,
+            // re-apply BCs and halo exchange to ensure ghost cells are consistent
+            // with the current MPI decomposition.
+            if (ParallelEnv::is_master()) {
+                std::cout << "Re-applying boundary conditions after restart...\n";
+            }
+            for (auto& lb : blocks) {
+                BoundaryConditionApplier::apply_face_ghost(lb, cfg);
+            }
+            pm.exchange_all_halos(blocks);
+            for (auto& lb : blocks) {
+                BoundaryConditionApplier::apply_edge_ghost(lb);
+                BoundaryConditionApplier::apply_corner_ghost(lb);
+            }
+
+            // Convert prim → cons so WCNS interpolation sees correct ghost values
+            for (auto& lb : blocks) {
+                lb.field.prim_to_cons(cfg.gamma);
+            }
+
+            // ---- Write restart-state solution ----
+            {
+                if (ParallelEnv::is_master()) {
+                    std::cout << "Writing solution at restart state (iter="
+                              << restart_iter << ", time=" << restart_time
+                              << ")...\n";
+                }
+                SolutionWriter::write(blocks, cfg, restart_iter, restart_time);
+            }
+        } else {
+            // ---- Initialize from scratch ----
+            if (ParallelEnv::is_master()) {
+                std::cout << "\n--- Flow Initialization: " << cfg.init_type
+                          << " ---\n";
+            }
+            for (auto& lb : blocks) {
+                FlowInitializer::initialize(lb, cfg);
+            }
+
+            // ================================================================
+            // 4. Boundary conditions + halo exchange (primitive variables)
+            // ================================================================
+            // Correct ordering: face ghost → halo exchange → edge/corner ghost.
+            // Edge/corner ghost fixup needs valid MPI-split ghost data, so the
+            // halo exchange must happen BEFORE edge/corner (but AFTER face ghost).
+            if (ParallelEnv::is_master()) {
+                std::cout << "Applying boundary conditions...\n";
+            }
+            for (auto& lb : blocks) {
+                BoundaryConditionApplier::apply_face_ghost(lb, cfg);
+            }
+            pm.exchange_all_halos(blocks);
+            for (auto& lb : blocks) {
+                BoundaryConditionApplier::apply_edge_ghost(lb);
+                BoundaryConditionApplier::apply_corner_ghost(lb);
+            }
+
+            // ★ Critical: convert prim → cons so WCNS interpolation sees
+            //   correct conservative ghost-cell values from the start.
+            for (auto& lb : blocks) {
+                lb.field.prim_to_cons(cfg.gamma);
+            }
+
+            if (ParallelEnv::is_master()) {
+                std::cout << "Initialization complete.\n";
+            }
+
+            // ---- Write initial flow field (iter=0) ----
+            {
+                constexpr Int iter0 = 0;
+                constexpr Real time0 = 0.0;
+                if (ParallelEnv::is_master()) {
+                    std::cout << "Writing initial solution (iter=0)...\n";
+                }
+                SolutionWriter::write(blocks, cfg, iter0, time0);
+            }
         }
 
         // ================================================================
@@ -204,38 +251,68 @@ int main(int argc, char* argv[]) {
         // ================================================================
         // 7. Main time loop
         // ================================================================
-        Real time            = 0.0;
-        Real last_output_time = 0.0;
-        bool converged       = false;
-        Int iter             = 0;
+        Real time             = restart_time;
+        Real last_output_time = restart_time;
+        bool converged        = false;
+        Int iter              = restart_iter;
 
-        // ---- Log initial history at iter=0 ----
+        // ---- Early exit if restart already exceeds max_time ----
+        if (cfg.max_time > 0.0 && restart_time >= cfg.max_time - 1.0e-12) {
+            if (ParallelEnv::is_master()) {
+                std::cout << "Restart time " << restart_time
+                          << " already >= max_time " << cfg.max_time
+                          << " — no further iterations needed.\n";
+            }
+            // Fall through to final output
+        }
+
+        // ---- Log initial history at current state ----
         {
             auto section_avgs = HistoryMonitor::compute_averages(blocks, monitor_x_locations);
             if (ParallelEnv::is_master()) {
-                HistoryMonitor::log(hist_file, 0, 0.0, 0.0, section_avgs);
+                HistoryMonitor::log(hist_file, iter, time, 0.0, section_avgs);
                 std::cout << "Initial U_avg(x=0) = " << section_avgs[0]
                           << ", U_avg(x=pi) = " << section_avgs[1] << "\n";
             }
         }
 
+        // When resuming from restart, the half-run already added dt at
+        // iter=restart_iter to time but did NOT execute the stages.
+        // We must start from restart_iter (NOT +1) to run those missing
+        // stages, but skip the dt→time addition for the first iteration.
+        bool  is_restart   = (restart_iter > 0);
+        Int   start_iter   = is_restart ? restart_iter : 1;
+        bool  skip_dt_add  = is_restart;  // first iter: dt already in restart_time
+
         if (ParallelEnv::is_master()) {
             std::cout << "\n========== Starting Time Loop ==========\n"
                       << "  Scheme: " << cfg.time_scheme
                       << " (" << n_stages << " stage(s))\n"
+                      << "  Start:   iter=" << start_iter
+                      << ", time=" << time << "\n"
                       << "  Max iter: " << cfg.max_iter;
             if (cfg.max_time > 0.0) {
                 std::cout << ", Max time: " << cfg.max_time;
             }
+            if (is_restart) {
+                std::cout << "\n  (first dt already in restart_time — skipping add)";
+            }
             std::cout << "\n=========================================\n\n";
         }
 
-        for (iter = 1; iter <= cfg.max_iter; ++iter) {
+        for (iter = start_iter; iter <= cfg.max_iter; ++iter) {
 
             // ---- 7a. Compute time step ----
             Real dt = TimeStep::compute(blocks, cfg);
             dt = ParallelManager::global_min(dt);
-            time += dt;
+
+            // On the first iteration after restart, the dt was already added
+            // to time in the previous (half-period) run — don't add it again.
+            if (skip_dt_add) {
+                skip_dt_add = false;
+            } else {
+                time += dt;
+            }
 
             // ---- 7b. Physical time termination ----
             if (cfg.max_time > 0.0 && time >= cfg.max_time) {

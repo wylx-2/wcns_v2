@@ -68,6 +68,7 @@ struct Config {
     Int     output_freq   = 100;        ///< Write solution every N iterations
     Int     restart_freq  = 500;        ///< Write restart files every N iterations
     Int     residual_freq = 1;          ///< Compute residuals & monitor every N iterations
+    std::string restart_file = "";      ///< Restart file basename for resuming ("" = start from scratch)
     Real    converge_tol  = 1.0e-6;     ///< Convergence tolerance (L2 residual norm)
     std::string time_scheme = "rk3-tvd";///< Time integration: "rk3-tvd", "rk4", "lu-sgs"
     Real    lu_sgs_kappa  = 4.0;        ///< LU-SGS over-relaxation factor (>1 for stability)

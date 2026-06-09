@@ -191,6 +191,8 @@ void ConfigReader::set_control(Config& cfg, const std::string& key,
         cfg.lu_sgs_kappa = static_cast<Real>(std::atof(value.c_str()));
     } else if (key == "ng" || key == "ghost_layers") {
         cfg.ng = static_cast<Int>(std::atoi(value.c_str()));
+    } else if (key == "restart_file") {
+        cfg.restart_file = value;  // basename for restart (e.g. "restart_000500")
     } else {
         std::cerr << "ConfigReader: warning: unknown key \""
                   << key << "\" in [control] section\n";
