@@ -43,9 +43,14 @@ public:
     /// without distortion by the mean flow. Used to verify formal accuracy
     /// of spatial discretization schemes.
     ///
+    /// Mean flow: ρ̄=1, P̄=1, (ū, v̄) from cfg.
+    /// Perturbations:
+    ///   (δu, δv) = ε/(2π)·exp(½(1−r²))·(−ȳ, x̄)
+    ///   δT = −(γ−1)ε²/(8γπ²)·exp(1−r²)
+    /// with r² = (x−xc)²+(y−yc)², ε = isentropic_vortex_strength.
+    ///
     /// Parameters (in cfg):
-    ///   isentropic_vortex_strength  — perturbation amplitude β
-    ///   isentropic_vortex_radius    — core radius R
+    ///   isentropic_vortex_strength  — vortex strength ε
     ///   isentropic_vortex_xc, yc    — initial vortex center
     ///   isentropic_vortex_u_inf, v_inf — mean flow velocity
     static void init_isentropic_vortex(LocalBlock& lb, const Config& cfg);

@@ -23,6 +23,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <stdexcept>
 
@@ -238,9 +239,25 @@ int main(int argc, char* argv[]) {
         }
 
         // ---- History monitor: cross-section average velocity ----
-        std::vector<Real> monitor_x_locations = {0.0, M_PI};
+        // Parse comma-separated x-locations from config (e.g. "0.0, 3.14159, 5.0")
+        // If empty, history monitoring is disabled.
+        std::vector<Real> monitor_x_locations;
+        if (!cfg.history_x_locations.empty()) {
+            std::istringstream iss(cfg.history_x_locations);
+            std::string token;
+            while (std::getline(iss, token, ',')) {
+                // Trim whitespace
+                token.erase(0, token.find_first_not_of(" \t"));
+                token.erase(token.find_last_not_of(" \t") + 1);
+                if (!token.empty()) {
+                    monitor_x_locations.push_back(
+                        static_cast<Real>(std::atof(token.c_str())));
+                }
+            }
+        }
+        bool has_history = !monitor_x_locations.empty();
         std::ofstream hist_file;
-        if (ParallelEnv::is_master()) {
+        if (has_history && ParallelEnv::is_master()) {
             hist_file.open(hist_path);
             if (!hist_file.is_open()) {
                 throw std::runtime_error("Cannot open " + hist_path + " for writing");
@@ -267,12 +284,10 @@ int main(int argc, char* argv[]) {
         }
 
         // ---- Log initial history at current state ----
-        {
+        if (has_history) {
             auto section_avgs = HistoryMonitor::compute_averages(blocks, monitor_x_locations);
             if (ParallelEnv::is_master()) {
                 HistoryMonitor::log(hist_file, iter, time, 0.0, section_avgs);
-                std::cout << "Initial U_avg(x=0) = " << section_avgs[0]
-                          << ", U_avg(x=pi) = " << section_avgs[1] << "\n";
             }
         }
 
@@ -508,7 +523,7 @@ int main(int argc, char* argv[]) {
                         }
 
                         // Cross-section average velocity monitoring
-                        {
+                        if (has_history) {
                             auto section_avgs = HistoryMonitor::compute_averages(
                                 blocks, monitor_x_locations);
                             if (ParallelEnv::is_master()) {

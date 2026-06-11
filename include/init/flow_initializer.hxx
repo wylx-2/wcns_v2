@@ -334,42 +334,46 @@ inline void FlowInitializer::init_channel_turbulence(LocalBlock& lb, const Confi
 // Isentropic vortex — exact solution of 2D Euler equations
 // ============================================================================
 //
-// A vortex perturbation is superimposed on a uniform mean flow:
+// Mean flow: ρ̄=1, P̄=1, (ū,v̄) = (u_inf, v_inf).
 //
-//   δu = -β * (y-yc)/R * exp(f)
-//   δv =  β * (x-xc)/R * exp(f)
-//   δT = -½(γ-1) * β² * exp(2f)
+// Isentropic vortex perturbations (δS = 0) superimposed on the mean flow:
 //
-// where f = ½(1 - ((x-xc)²+(y-yc)²)/R²).
+//   (δu, δv) = ε/(2π) · exp(½(1−r²)) · (−ȳ, x̄)
+//   δT       = −(γ−1)ε²/(8γπ²) · exp(1−r²)
 //
-// From the isentropic relation (s = const):
-//   ρ = T^{1/(γ-1)}     (normalized by free-stream ρ=1, T=1)
-//   p = T^{γ/(γ-1)} / (γ·Ma²)
+// where (x̄,ȳ) = (x−xc, y−yc),  r² = x̄²+ȳ²,  ε = vortex strength.
+//
+// From the isentropic relation (s = const, T̄=1, ρ̄=1):
+//   T  = 1 + δT
+//   ρ  = T^{1/(γ−1)}
+//   p  = ρ^γ = T^{γ/(γ−1)}
 //
 // The exact time-dependent solution is just the initial condition
 // advected by the mean flow:  xc(t) = xc0 + u_inf·t, yc(t) = yc0 + v_inf·t.
 // With periodic BCs, the vortex returns to its initial position after
-// T = L / |(u_inf, v_inf)|.
+// one period T_period = L / |(u_inf, v_inf)|.
 //
-// Reference:
-//   Jiang & Shu, JCP 126 (1996), "Efficient Implementation of WENO Schemes"
+// Note: set Mach = 1/√γ in the config so that the code's non-dimensional EOS
+//       p* = ρ*·T*/(γ·Mach²) reduces to p* = ρ*·T*, matching T = P/ρ.
 
 inline void FlowInitializer::init_isentropic_vortex(LocalBlock& lb,
                                                       const Config& cfg) {
     Int i0, i1, j0, j1, k0, k1;
     interior_range(lb, i0, i1, j0, j1, k0, k1);
 
-    const Real beta  = cfg.isentropic_vortex_strength;
-    const Real Rv    = cfg.isentropic_vortex_radius;
-    const Real xc    = cfg.isentropic_vortex_xc;
-    const Real yc    = cfg.isentropic_vortex_yc;
+    const Real eps  = cfg.isentropic_vortex_strength;
+    const Real xc   = cfg.isentropic_vortex_xc;
+    const Real yc   = cfg.isentropic_vortex_yc;
     const Real u_inf = cfg.isentropic_vortex_u_inf;
     const Real v_inf = cfg.isentropic_vortex_v_inf;
     const Real gamma = cfg.gamma;
     const Real gm1   = gamma - 1.0;
-    const Real Ma2   = cfg.Mach * cfg.Mach;
 
-    const Real one_over_Rv = 1.0 / Rv;
+    // (δu, δv) = ε/(2π)·exp(½(1−r²))·(−ȳ, x̄)
+    const Real coeff_uv = eps / (2.0 * M_PI);
+
+    // δT = −(γ−1)ε²/(8γπ²)·exp(1−r²)
+    const Real coeff_T  = gm1 * eps * eps / (8.0 * gamma * M_PI * M_PI);
 
     for (Int k = k0; k <= k1; ++k)
     for (Int j = j0; j <= j1; ++j)
@@ -377,25 +381,22 @@ inline void FlowInitializer::init_isentropic_vortex(LocalBlock& lb,
         Real x = lb.grid.cell_x(i,j,k);
         Real y = lb.grid.cell_y(i,j,k);
 
-        // Normalized distance from vortex center
-        Real dx = x - xc;
-        Real dy = y - yc;
-        Real r2 = (dx*dx + dy*dy) * one_over_Rv * one_over_Rv;
-
-        // f = ½(1 - r²)
-        Real f = 0.5 * (1.0 - r2);
+        // Distance from vortex center
+        Real x_bar = x - xc;
+        Real y_bar = y - yc;
+        Real r2 = x_bar*x_bar + y_bar*y_bar;
 
         // Velocity perturbations
-        Real du = -beta * dy * one_over_Rv * std::exp(f);
-        Real dv =  beta * dx * one_over_Rv * std::exp(f);
+        Real du = -coeff_uv * y_bar * std::exp(0.5 * (1.0 - r2));
+        Real dv =  coeff_uv * x_bar * std::exp(0.5 * (1.0 - r2));
 
-        // Temperature perturbation: δT = -½(γ-1)β²·exp(2f)
-        Real dT = -0.5 * gm1 * beta * beta * std::exp(2.0 * f);
+        // Temperature perturbation
+        Real dT = -coeff_T * std::exp(1.0 - r2);
 
-        // Temperature, density, pressure from isentropic relations
+        // Isentropic relations (T̄=1, ρ̄=1)
         Real T_loc = 1.0 + dT;
-        Real rho   = std::pow(T_loc, 1.0 / gm1);       // T^{1/(γ-1)}
-        Real p     = rho * T_loc / (gamma * Ma2);       // EOS
+        Real rho = std::pow(T_loc, 1.0 / gm1);          // T^{1/(γ−1)}
+        Real p   = std::pow(T_loc, gamma / gm1);        // T^{γ/(γ−1)} = ρ^γ
 
         lb.field.prim.rho(i,j,k) = rho;
         lb.field.prim.u(i,j,k)   = u_inf + du;

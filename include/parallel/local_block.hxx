@@ -176,10 +176,14 @@ inline LocalBlock LocalBlock::from_sub_zone(
         }
     }
 
-    // ---- Compute metrics ----
+    // ---- Extract metrics from full zone (avoids extrapolated ghost cell data ----
+    // ---- at internal split boundaries, which is wrong on curvilinear grids) ----
+    // The full zone's metrics were computed with correct stencil support everywhere
+    // (all ghost cells are either periodic-donor or extrapolated from the full
+    // grid geometry).  Extracting from the full zone guarantees metric correctness
+    // and free-stream conservation on decomposed curvilinear grids.
     lb.grid.metrics_type = full_zone.metrics_type;  // inherit from full zone
-    lb.grid.compute_metrics();
-    lb.grid.compute_face_metrics();
+    lb.grid.extract_metrics_from(full_zone, offset_i, offset_j, offset_k);
 
     // ---- Copy boundary conditions (only patches that overlap this sub-block) ----
     for (Int b = 0; b < full_zone.bc.num_patches(); ++b) {
@@ -247,12 +251,64 @@ inline LocalBlock LocalBlock::from_sub_zone(
 }
 
 // ============================================================================
+// Helper: find the sub-block at the periodic opposite face that has the same
+// tangential extent as the given sub-block.
+// ============================================================================
+inline int find_periodic_neighbor(int face, const SubBlock& sub,
+                                   const Grid& full_zone,
+                                   const std::vector<SubBlock>& all_decomp) {
+    int opposite_face = (face % 2 == 0) ? face + 1 : face - 1;
+    Int nci = full_zone.ni_core - 1;  // core cell count in i
+    Int ncj = full_zone.nj_core - 1;  // core cell count in j
+    Int nck = full_zone.nk_core - 1;  // core cell count in k
+
+    for (std::size_t idx = 0; idx < all_decomp.size(); ++idx) {
+        const SubBlock& other = all_decomp[idx];
+
+        switch (opposite_face) {
+        case 0:  // IMIN: other sub-block's ci_min must be 0
+            if (other.ci_min != 0) continue;
+            if (other.cj_min != sub.cj_min || other.cj_max != sub.cj_max) continue;
+            if (other.ck_min != sub.ck_min || other.ck_max != sub.ck_max) continue;
+            return static_cast<int>(idx);
+        case 1:  // IMAX: other sub-block's ci_max must be nci-1
+            if (other.ci_max != nci - 1) continue;
+            if (other.cj_min != sub.cj_min || other.cj_max != sub.cj_max) continue;
+            if (other.ck_min != sub.ck_min || other.ck_max != sub.ck_max) continue;
+            return static_cast<int>(idx);
+        case 2:  // JMIN: other sub-block's cj_min must be 0
+            if (other.cj_min != 0) continue;
+            if (other.ci_min != sub.ci_min || other.ci_max != sub.ci_max) continue;
+            if (other.ck_min != sub.ck_min || other.ck_max != sub.ck_max) continue;
+            return static_cast<int>(idx);
+        case 3:  // JMAX: other sub-block's cj_max must be ncj-1
+            if (other.cj_max != ncj - 1) continue;
+            if (other.ci_min != sub.ci_min || other.ci_max != sub.ci_max) continue;
+            if (other.ck_min != sub.ck_min || other.ck_max != sub.ck_max) continue;
+            return static_cast<int>(idx);
+        case 4:  // KMIN: other sub-block's ck_min must be 0
+            if (other.ck_min != 0) continue;
+            if (other.ci_min != sub.ci_min || other.ci_max != sub.ci_max) continue;
+            if (other.cj_min != sub.cj_min || other.cj_max != sub.cj_max) continue;
+            return static_cast<int>(idx);
+        case 5:  // KMAX: other sub-block's ck_max must be nck-1
+            if (other.ck_max != nck - 1) continue;
+            if (other.ci_min != sub.ci_min || other.ci_max != sub.ci_max) continue;
+            if (other.cj_min != sub.cj_min || other.cj_max != sub.cj_max) continue;
+            return static_cast<int>(idx);
+        }
+    }
+
+    return -1;  // not found (shouldn't happen for valid periodic decompositions)
+}
+
+// ============================================================================
 // Neighbor construction
 // ============================================================================
 
 inline void LocalBlock::build_neighbors(
         LocalBlock& lb, const Grid& full_zone, const SubBlock& sub,
-        int /*my_rank*/, const std::vector<SubBlock>& all_decomp) {
+        int my_rank, const std::vector<SubBlock>& all_decomp) {
 
     for (int face = 0; face < 6; ++face) {
         NeighborInfo& ni = lb.neighbors[face];
@@ -269,14 +325,30 @@ inline void LocalBlock::build_neighbors(
                 ni.transform[0] = pc->transform[0];
                 ni.transform[1] = pc->transform[1];
                 ni.transform[2] = pc->transform[2];
-                // Periodic target: same block or donor block on another process
-                // For single-zone periodic, target is self
-                ni.target_rank  = -1;  // same process
-                ni.target_block = -1;  // will be resolved later
-                // Periodic: the opposite face provides the interior data source.
-                // For a single-zone periodic connection (Imin↔Imax etc.),
-                // ghost cells at this face are filled from the opposite face.
-                ni.target_face  = (face % 2 == 0) ? face + 1 : face - 1;
+
+                // Periodic target: find the sub-block that holds the opposite
+                // face's interior data.  For single-zone periodic, the opposite
+                // face may be on a different sub-block if the domain is decomposed.
+                int opposite_face = (face % 2 == 0) ? face + 1 : face - 1;
+                ni.target_face  = opposite_face;
+                ni.target_rank  = -1;  // default: same process
+                ni.target_block = -1;  // default: self
+
+                int pidx = find_periodic_neighbor(face, sub, full_zone, all_decomp);
+                if (pidx >= 0) {
+                    const SubBlock& donor = all_decomp[static_cast<std::size_t>(pidx)];
+                    if (donor.assigned_rank != my_rank) {
+                        // Cross-process periodic: use MPI halo exchange
+                        ni.target_rank  = donor.assigned_rank;
+                        ni.target_block = pidx;
+                    } else {
+                        // Same-process periodic (different sub-block, same rank):
+                        // still need the correct block index for direct copy
+                        ni.target_block = pidx;
+                    }
+                }
+                // If pidx < 0 (shouldn't happen), target_rank=-1 keeps
+                // the self-copy fallback from the BC applier.
             } else {
                 // BC face — no halo exchange needed
                 ni.active = false;

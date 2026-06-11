@@ -178,7 +178,7 @@ inline void ParallelManager::exchange_all_halos(std::vector<LocalBlock>& blocks)
             &blocks[i].field.prim.w,
             &blocks[i].field.prim.p
         };
-        halo_ex_[i].exchange_multi(arrays, blocks[i]);
+        halo_ex_[i].exchange_multi(arrays, blocks[i], blocks);
     }
 }
 
@@ -212,7 +212,7 @@ inline void ParallelManager::exchange_gradient_halos(std::vector<LocalBlock>& bl
             &blocks[i].field.dw_dx, &blocks[i].field.dw_dy, &blocks[i].field.dw_dz,
             &blocks[i].field.dT_dx, &blocks[i].field.dT_dy, &blocks[i].field.dT_dz
         };
-        halo_ex_[i].exchange_multi(arrays, blocks[i]);
+        halo_ex_[i].exchange_multi(arrays, blocks[i], blocks);
     }
 }
 
@@ -233,7 +233,7 @@ inline void ParallelManager::exchange_viscous_flux_halos(std::vector<LocalBlock>
             &blocks[i].field.vis_z.f3, &blocks[i].field.vis_z.f4,
             &blocks[i].field.vis_z.f5
         };
-        halo_ex_[i].exchange_multi(arrays, blocks[i]);
+        halo_ex_[i].exchange_multi(arrays, blocks[i], blocks);
     }
 }
 

@@ -32,6 +32,7 @@ inline void InviscidRHS::compute(LocalBlock& lb) {
     const Int j0 = 3, j1 = ncj - 4;
     const Int k0 = 3, k1 = nck - 4;
 
+
     // Initialize RHS to zero (only interior cells matter, but zero all for safety)
     f.rhs.fill(0.0);
 

@@ -934,3 +934,97 @@ inline void Grid::compute_face_metrics() {
               << "Y-faces (" << face_eta_x.ni() << "x" << face_eta_x.nj() << "x" << face_eta_x.nk() << "), "
               << "Z-faces (" << face_zeta_x.ni() << "x" << face_zeta_x.nj() << "x" << face_zeta_x.nk() << ")\n";
 }
+
+// ============================================================================
+// Extract metrics from donor grid
+// ============================================================================
+
+inline void Grid::extract_metrics_from(const Grid& donor, Int ci0, Int cj0, Int ck0) {
+    // ---- Cell-center metrics (nci x ncj x nck) ----
+    met_xi_x.allocate(nci, ncj, nck);
+    met_xi_y.allocate(nci, ncj, nck);
+    met_xi_z.allocate(nci, ncj, nck);
+    met_eta_x.allocate(nci, ncj, nck);
+    met_eta_y.allocate(nci, ncj, nck);
+    met_eta_z.allocate(nci, ncj, nck);
+    met_zeta_x.allocate(nci, ncj, nck);
+    met_zeta_y.allocate(nci, ncj, nck);
+    met_zeta_z.allocate(nci, ncj, nck);
+    jacobian.allocate(nci, ncj, nck);
+
+    for (Int k = 0; k < nck; ++k) {
+    for (Int j = 0; j < ncj; ++j) {
+    for (Int i = 0; i < nci; ++i) {
+        Int di = ci0 + i;
+        Int dj = cj0 + j;
+        Int dk = ck0 + k;
+
+        met_xi_x(i,j,k)   = donor.met_xi_x(di, dj, dk);
+        met_xi_y(i,j,k)   = donor.met_xi_y(di, dj, dk);
+        met_xi_z(i,j,k)   = donor.met_xi_z(di, dj, dk);
+        met_eta_x(i,j,k)  = donor.met_eta_x(di, dj, dk);
+        met_eta_y(i,j,k)  = donor.met_eta_y(di, dj, dk);
+        met_eta_z(i,j,k)  = donor.met_eta_z(di, dj, dk);
+        met_zeta_x(i,j,k) = donor.met_zeta_x(di, dj, dk);
+        met_zeta_y(i,j,k) = donor.met_zeta_y(di, dj, dk);
+        met_zeta_z(i,j,k) = donor.met_zeta_z(di, dj, dk);
+        jacobian(i,j,k)   = donor.jacobian(di, dj, dk);
+    }}}
+
+    // ---- Face metrics ----
+    // X-faces: (nci+1) x ncj x nck
+    face_xi_x.allocate(nci + 1, ncj, nck);
+    face_xi_y.allocate(nci + 1, ncj, nck);
+    face_xi_z.allocate(nci + 1, ncj, nck);
+    for (Int k = 0; k < nck; ++k) {
+    for (Int j = 0; j < ncj; ++j) {
+    for (Int i = 0; i < nci + 1; ++i) {
+        Int di = ci0 + i;
+        Int dj = cj0 + j;
+        Int dk = ck0 + k;
+        face_xi_x(i,j,k) = donor.face_xi_x(di, dj, dk);
+        face_xi_y(i,j,k) = donor.face_xi_y(di, dj, dk);
+        face_xi_z(i,j,k) = donor.face_xi_z(di, dj, dk);
+    }}}
+
+    // Y-faces: nci x (ncj+1) x nck
+    face_eta_x.allocate(nci, ncj + 1, nck);
+    face_eta_y.allocate(nci, ncj + 1, nck);
+    face_eta_z.allocate(nci, ncj + 1, nck);
+    for (Int k = 0; k < nck; ++k) {
+    for (Int j = 0; j < ncj + 1; ++j) {
+    for (Int i = 0; i < nci; ++i) {
+        Int di = ci0 + i;
+        Int dj = cj0 + j;
+        Int dk = ck0 + k;
+        face_eta_x(i,j,k) = donor.face_eta_x(di, dj, dk);
+        face_eta_y(i,j,k) = donor.face_eta_y(di, dj, dk);
+        face_eta_z(i,j,k) = donor.face_eta_z(di, dj, dk);
+    }}}
+
+    // Z-faces: nci x ncj x (nck+1)
+    face_zeta_x.allocate(nci, ncj, nck + 1);
+    face_zeta_y.allocate(nci, ncj, nck + 1);
+    face_zeta_z.allocate(nci, ncj, nck + 1);
+    for (Int k = 0; k < nck + 1; ++k) {
+    for (Int j = 0; j < ncj; ++j) {
+    for (Int i = 0; i < nci; ++i) {
+        Int di = ci0 + i;
+        Int dj = cj0 + j;
+        Int dk = ck0 + k;
+        face_zeta_x(i,j,k) = donor.face_zeta_x(di, dj, dk);
+        face_zeta_y(i,j,k) = donor.face_zeta_y(di, dj, dk);
+        face_zeta_z(i,j,k) = donor.face_zeta_z(di, dj, dk);
+    }}}
+
+    // Also copy cell_vol (used by history monitor)
+    cell_vol.allocate(nci, ncj, nck);
+    for (Int k = 0; k < nck; ++k) {
+    for (Int j = 0; j < ncj; ++j) {
+    for (Int i = 0; i < nci; ++i) {
+        cell_vol(i,j,k) = donor.cell_vol(ci0 + i, cj0 + j, ck0 + k);
+    }}}
+
+    std::cout << "  Metrics extracted from donor at offset ("
+              << ci0 << "," << cj0 << "," << ck0 << ")\n";
+}

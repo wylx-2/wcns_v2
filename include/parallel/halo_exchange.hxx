@@ -27,7 +27,8 @@ inline void HaloExchange::setup(const LocalBlock& block) {
 
         fb.active    = ni.active;
         fb.is_remote = ni.active && ni.target_rank >= 0 &&
-                        ni.target_rank != -1;  // -1 means same-process
+                        ni.target_rank != -1 &&                 // -1 means same-block periodic
+                        ni.target_rank != ParallelEnv::rank();  // same rank → local copy
 
         if (!fb.active) continue;
 
@@ -198,14 +199,30 @@ inline void HaloExchange::unpack_face(MultiArray3D<Real>& arr, int face,
 // Local copy (same process, no MPI)
 // ============================================================================
 
-inline void HaloExchange::copy_local(MultiArray3D<Real>& /*arr*/, int /*face*/,
-                                      const LocalBlock& /*block*/,
-                                      const LocalBlock& /*neighbor*/) {
-    // Local (same-process) copy: when two blocks are on the same MPI rank,
-    // ghost data can be copied directly from neighbor's interior.
-    // For the initial implementation, ghost data from the full-zone extraction
-    // is already correct, so this is a no-op.
-    // TODO: implement direct copy for dynamic halo updates during time stepping.
+inline void HaloExchange::copy_local(MultiArray3D<Real>& arr, int face,
+                                      const LocalBlock& block,
+                                      const LocalBlock& neighbor) {
+    // Direct (same-process) copy from neighbor's interior to block's ghost.
+    //
+    // Example: Block A (IMAX, face=1) ↔ Block B (IMIN, face=0)
+    //   pack_face at IMIN from Block B → Block B's interior [ng, 2*ng-1]
+    //   unpack_face at IMAX to Block A → Block A's ghost [nci-ng, nci-1]
+    //
+    // The neighbor's connecting face is ni.target_face (the opposite face
+    // of the current block's face).  Data is read from neighbor's interior
+    // cells adjacent to that face and written to the current block's ghost.
+
+    const NeighborInfo& ni = block.neighbors[face];
+    Int single_sz = buffer_size(face, block);
+
+    // Use a temporary buffer for the pack→unpack sequence
+    std::vector<Real> tmp_buf(static_cast<std::size_t>(single_sz));
+
+    // Pack from neighbor's interior at the neighbor's connecting face
+    pack_face(arr, ni.target_face, neighbor, tmp_buf.data(), 0);
+
+    // Unpack to the current block's ghost at the current face
+    unpack_face(arr, face, block, tmp_buf.data(), 0);
 }
 
 // ============================================================================
@@ -213,9 +230,10 @@ inline void HaloExchange::copy_local(MultiArray3D<Real>& /*arr*/, int /*face*/,
 // ============================================================================
 
 inline void HaloExchange::exchange(MultiArray3D<Real>& arr,
-                                    const LocalBlock& block) {
+                                    const LocalBlock& block,
+                                    const std::vector<LocalBlock>& all_blocks) {
     std::vector<MultiArray3D<Real>*> arrays = {&arr};
-    exchange_multi(arrays, block);
+    exchange_multi(arrays, block, all_blocks);
 }
 
 // ============================================================================
@@ -224,11 +242,49 @@ inline void HaloExchange::exchange(MultiArray3D<Real>& arr,
 
 inline void HaloExchange::exchange_multi(
         const std::vector<MultiArray3D<Real>*>& arrays,
-        const LocalBlock& block) {
+        const LocalBlock& block,
+        const std::vector<LocalBlock>& all_blocks) {
 
     Int n_arrays = static_cast<Int>(arrays.size());
     MPI_Comm comm = MPI_COMM_WORLD;
 
+    // We use a 3-phase approach to guarantee deadlock-free communication
+    // even when periodic faces connect different face indices across ranks
+    // (e.g. rank 0 IMIN ↔ rank 1 IMAX).
+    //
+    // Phase 1: Post all Irecvs for all remote faces
+    // Phase 2: Pack + Isend for all remote faces  (same-process copies inline)
+    // Phase 3: Waitall + Unpack
+
+    MPI_Request all_reqs[12];  // max 6 sends + 6 recvs
+    int n_reqs = 0;
+    int face_recv_idx[6] = {-1, -1, -1, -1, -1, -1};
+    int face_send_idx[6] = {-1, -1, -1, -1, -1, -1};
+
+    // ---- Phase 1: Post all remote Irecvs ----
+    for (int face = 0; face < 6; ++face) {
+        FaceBuffer& fb = bufs_[face];
+        if (!fb.active || !fb.is_remote) continue;
+
+        const NeighborInfo& ni = block.neighbors[face];
+        Int single_sz = buffer_size(face, block);
+        Int total_sz  = single_sz * n_arrays;
+
+        if (static_cast<Int>(fb.recv_buf.size()) < total_sz) {
+            fb.recv_buf.assign(total_sz, 0.0);
+        }
+
+        int tag = std::min(block.block_id, ni.target_block) * 1000
+                + std::min(face, ni.target_face) * 10
+                + (ni.is_periodic ? 5 : 0)
+                + 1;
+
+        face_recv_idx[face] = n_reqs;
+        MPI_Irecv(fb.recv_buf.data(), static_cast<int>(total_sz), MPI_DOUBLE,
+                  ni.target_rank, tag, comm, &all_reqs[n_reqs++]);
+    }
+
+    // ---- Phase 2: Same-process copies + pack & Isend for remote faces ----
     for (int face = 0; face < 6; ++face) {
         FaceBuffer& fb = bufs_[face];
         const NeighborInfo& ni = block.neighbors[face];
@@ -238,51 +294,78 @@ inline void HaloExchange::exchange_multi(
         Int total_sz  = single_sz * n_arrays;
 
         if (!fb.is_remote) {
-            // Same-process neighbor (e.g., same-block periodic connection).
-            // Copy ghost data from the interior of the source (opposite) face.
+            // Same-process copy.  Two cases:
+            //   1) Same-block periodic (target_block == -1 or self):
+            //      pack from self at target_face, unpack to self at face.
+            //      This copies interior data from the opposite periodic side.
+            //   2) Same-rank different block (internal split boundary):
+            //      pack from neighbor block's interior at target_face,
+            //      unpack to current block's ghost at face.
             if (ni.target_face >= 0 && ni.target_face < 6) {
-                // Resize temp buffer if needed (setup() only sized for single_sz,
-                // but here we may pack multiple arrays).
-                Int needed_sz = single_sz * n_arrays;
-                if (static_cast<Int>(fb.send_buf.size()) < needed_sz) {
-                    fb.send_buf.resize(static_cast<std::size_t>(needed_sz));
-                }
-                for (Int a = 0; a < n_arrays; ++a) {
-                    pack_face(*arrays[static_cast<std::size_t>(a)], ni.target_face,
-                              block, fb.send_buf.data(), a * single_sz);
-                    unpack_face(*arrays[static_cast<std::size_t>(a)], face,
-                                block, fb.send_buf.data(), a * single_sz);
+                if (ni.target_block == -1 ||
+                    ni.target_block == block.block_id) {
+                    // Case 1: Same-block periodic — copy from self
+                    Int needed_sz = single_sz * n_arrays;
+                    if (static_cast<Int>(fb.send_buf.size()) < needed_sz) {
+                        fb.send_buf.resize(static_cast<std::size_t>(needed_sz));
+                    }
+                    for (Int a = 0; a < n_arrays; ++a) {
+                        pack_face(*arrays[static_cast<std::size_t>(a)], ni.target_face,
+                                  block, fb.send_buf.data(), a * single_sz);
+                        unpack_face(*arrays[static_cast<std::size_t>(a)], face,
+                                    block, fb.send_buf.data(), a * single_sz);
+                    }
+                } else {
+                    // Case 2: Same-rank different block — copy from neighbor
+                    const LocalBlock* neighbor = nullptr;
+                    for (const auto& nbr : all_blocks) {
+                        if (nbr.block_id == ni.target_block) {
+                            neighbor = &nbr;
+                            break;
+                        }
+                    }
+                    if (neighbor) {
+                        for (Int a = 0; a < n_arrays; ++a) {
+                            copy_local(*arrays[static_cast<std::size_t>(a)],
+                                       face, block, *neighbor);
+                        }
+                    }
                 }
             }
             continue;
         }
 
-        fb.send_buf.assign(total_sz, 0.0);
-        fb.recv_buf.assign(total_sz, 0.0);
+        // Remote face: pack and Isend
+        if (static_cast<Int>(fb.send_buf.size()) < total_sz) {
+            fb.send_buf.assign(total_sz, 0.0);
+        }
 
-        // Pack all arrays
         for (Int a = 0; a < n_arrays; ++a) {
             pack_face(*arrays[static_cast<std::size_t>(a)], face, block,
                       fb.send_buf.data(), a * single_sz);
         }
 
-        // Blocking send + recv
-        // Use a symmetric tag: min(src,dst)*1000 + min(face, target_face)*10
-        // to ensure both sides agree on the tag for a given face pair.
         int tag = std::min(block.block_id, ni.target_block) * 1000
                 + std::min(face, ni.target_face) * 10
-                + 1;  // +1 to avoid tag 0 (some MPI implementations treat 0 specially)
-        MPI_Request sreq, rreq;
+                + (ni.is_periodic ? 5 : 0)
+                + 1;
 
+        face_send_idx[face] = n_reqs;
         MPI_Isend(fb.send_buf.data(), static_cast<int>(total_sz), MPI_DOUBLE,
-                  ni.target_rank, tag, comm, &sreq);
-        MPI_Irecv(fb.recv_buf.data(), static_cast<int>(total_sz), MPI_DOUBLE,
-                  ni.target_rank, tag, comm, &rreq);
+                  ni.target_rank, tag, comm, &all_reqs[n_reqs++]);
+    }
 
-        MPI_Wait(&sreq, MPI_STATUS_IGNORE);
-        MPI_Wait(&rreq, MPI_STATUS_IGNORE);
+    // ---- Phase 3: Wait for all communications + unpack ----
+    if (n_reqs > 0) {
+        MPI_Waitall(n_reqs, all_reqs, MPI_STATUSES_IGNORE);
+    }
 
-        // Unpack all arrays
+    for (int face = 0; face < 6; ++face) {
+        FaceBuffer& fb = bufs_[face];
+        if (!fb.active || !fb.is_remote) continue;
+
+        Int single_sz = buffer_size(face, block);
+
         for (Int a = 0; a < n_arrays; ++a) {
             unpack_face(*arrays[static_cast<std::size_t>(a)], face, block,
                         fb.recv_buf.data(), a * single_sz);
@@ -296,7 +379,8 @@ inline void HaloExchange::exchange_multi(
 
 inline void HaloExchange::start_exchange(
         const std::vector<MultiArray3D<Real>*>& arrays,
-        const LocalBlock& block) {
+        const LocalBlock& block,
+        const std::vector<LocalBlock>& /*all_blocks*/) {
 
     Int n_arrays = static_cast<Int>(arrays.size());
     n_arrays_packed_ = n_arrays;
@@ -313,9 +397,22 @@ inline void HaloExchange::start_exchange(
         fb.recv_buf.assign(total_sz, 0.0);
 
         if (!fb.is_remote) {
-            // Same-process neighbor: perform direct copy for periodic connections
-            // This is handled by exchange_multi (blocking) — non-blocking
-            // start/wait does not support same-block copy yet.
+            // Same-process copy — handled in start_exchange for consistency.
+            // Same-block periodic: pack from self at target_face.
+            // Same-rank multi-block: cannot do direct copy here (no access
+            // to neighbor's arrays); skip and rely on blocking exchange_multi
+            // for correct behavior.
+            // For now, same-rank multi-block is handled by exchange_multi only.
+            const NeighborInfo& ni = block.neighbors[face];
+            if (ni.target_block == -1 || ni.target_block == block.block_id) {
+                // Same-block periodic: do the pack→unpack inline
+                for (Int a = 0; a < n_arrays; ++a) {
+                    pack_face(*arrays[static_cast<std::size_t>(a)], ni.target_face,
+                              block, fb.send_buf.data(), a * single_sz);
+                    unpack_face(*arrays[static_cast<std::size_t>(a)], face,
+                                block, fb.send_buf.data(), a * single_sz);
+                }
+            }
             continue;
         }
 
@@ -326,7 +423,11 @@ inline void HaloExchange::start_exchange(
         }
 
         // Start non-blocking send and receive
-        int tag = 100 * block.block_id + face;
+        // Tag must be symmetric so sender and receiver agree.
+        int tag = std::min(block.block_id, fb.target_block) * 1000
+                + std::min(face, block.neighbors[face].target_face) * 10
+                + (block.neighbors[face].is_periodic ? 5 : 0)
+                + 1;
 
         MPI_Isend(fb.send_buf.data(), static_cast<int>(total_sz), MPI_DOUBLE,
                   fb.target_rank, tag, comm, &fb.send_req);

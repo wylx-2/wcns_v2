@@ -111,6 +111,23 @@ public:
     /// Must be called after compute_metrics().
     void compute_face_metrics();
 
+    /// Extract metrics from a donor grid at a given cell offset.
+    ///
+    /// Copies cell-center metrics (met_xi_*, met_eta_*, met_zeta_*, jacobian,
+    /// cell_vol) and face metrics (face_xi_*, face_eta_*, face_zeta_*) from a
+    /// donor (typically the full zone before decomposition) into this grid.
+    ///
+    /// This avoids recomputing metrics on sub-blocks where ghost cells at
+    /// internal split boundaries contain extrapolated coordinates rather than
+    /// the correct neighbour data — a problem for curvilinear grids.
+    ///
+    /// The donor must have its metrics already computed.
+    /// @param donor  Source grid with pre-computed metrics and face metrics
+    /// @param ci0    Starting cell i-index in the donor for this block
+    /// @param cj0    Starting cell j-index in the donor for this block
+    /// @param ck0    Starting cell k-index in the donor for this block
+    void extract_metrics_from(const Grid& donor, Int ci0, Int cj0, Int ck0);
+
     /// Find a periodic 1-to-1 connection covering the given face.
     /// face: 0=IMIN, 1=IMAX, 2=JMIN, 3=JMAX, 4=KMIN, 5=KMAX
     /// Returns nullptr if no periodic connection exists for this face.

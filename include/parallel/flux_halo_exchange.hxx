@@ -347,8 +347,11 @@ inline void FluxHaloExchange::copy_local_flux(
         // We're MAX → neighbor is MIN → neighbor sends from [ng, 2*ng]
         nbr_s0 = ng;
     } else {
-        // We're MIN → neighbor is MAX → neighbor sends from [ndim-2*ng, ndim-ng]
-        nbr_s0 = nbr_ndim - 2 * ng;
+        // We're MIN → neighbor is MAX → neighbor sends from [ndim-2*ng-1, ndim-ng-1]
+        // The -1 correction: face indexing. Ghost faces 0..ng-1 correspond to
+        // interior faces ndim-2*ng-1..ndim-ng-1 on the MAX side (face 0 maps to
+        // face ndim-2*ng-1 periodically).
+        nbr_s0 = nbr_ndim - 2 * ng - 1;
     }
 
     // Access neighbor's flux arrays
@@ -408,33 +411,74 @@ inline void FluxHaloExchange::exchange(LocalBlock& block,
 
     MPI_Comm comm = MPI_COMM_WORLD;
 
+    // ---- Phase 1: Post all remote Irecvs ----
+    // Uses the same 3-phase approach as HaloExchange::exchange_multi
+    // to avoid deadlock when periodic faces connect different face indices.
+    MPI_Request all_reqs[12];
+    int n_reqs = 0;
+    int face_recv_idx[6] = {-1, -1, -1, -1, -1, -1};
+    int face_send_idx[6] = {-1, -1, -1, -1, -1, -1};
+    int face_dir[6];
+
     for (int face = 0; face < 6; ++face) {
         FluxFaceInfo& info = faces_[face];
         if (!info.active) continue;
 
-        // Determine direction from face index
-        int dir = face / 2;  // 0=ξ, 1=η, 2=ζ
+        int dir = face / 2;
+        face_dir[face] = dir;
 
-        // Determine if the neighbor is local (same process)
+        // Determine if the neighbor is local
         bool is_local = false;
-        const LocalBlock* neighbor_ptr = nullptr;
         for (const auto& nbr : all_blocks) {
             if (nbr.block_id == info.target_block) {
                 is_local = true;
-                neighbor_ptr = &nbr;
                 break;
             }
         }
         info.is_remote = !is_local;
 
-        if (is_local && neighbor_ptr) {
-            // Same-process direct copy
-            copy_local_flux(block, face, dir, info, *neighbor_ptr);
+        if (!info.is_remote) continue;
+
+        // Post Irecv
+        Int total_sz = static_cast<Int>(info.recv_buf.size());
+        // Symmetric tag: min(face, opposite_face) ensures sender/receiver agree.
+        // face ^ 1 flips 0↔1, 2↔3, 4↔5 (MIN↔MAX pairs).
+        int tag = std::min(block.block_id, info.target_block) * 100
+                + std::min(face, face ^ 1) * 10 + dir + 200;
+
+        face_recv_idx[face] = n_reqs;
+        MPI_Irecv(info.recv_buf.data(), total_sz, MPI_DOUBLE,
+                  info.target_rank, tag, comm, &all_reqs[n_reqs++]);
+    }
+
+    // ---- Phase 2: Local copies + Isend for remote faces ----
+    for (int face = 0; face < 6; ++face) {
+        FluxFaceInfo& info = faces_[face];
+        if (!info.active) continue;
+
+        int dir = face_dir[face];
+
+        // Determine if the neighbor is local (recheck — Phase 1 already set is_remote)
+        const LocalBlock* neighbor_ptr = nullptr;
+        for (const auto& nbr : all_blocks) {
+            if (nbr.block_id == info.target_block) {
+                neighbor_ptr = &nbr;
+                break;
+            }
+        }
+
+        if (neighbor_ptr) {
+            // Same-process direct copy. Skip self-copy: for single-block
+            // periodic, the Riemann solver already computes correct flux at
+            // all faces using periodic ghost data from the BC applier.
+            // Self-copy would overwrite face fluxes with wrong indices.
+            if (neighbor_ptr->block_id != block.block_id) {
+                copy_local_flux(block, face, dir, info, *neighbor_ptr);
+            }
         } else if (info.is_remote) {
-            // MPI exchange
+            // Remote: pack and Isend
             Int total_sz = static_cast<Int>(info.send_buf.size());
 
-            // Pack interior face fluxes into send buffer
             const FluxVars* fv = nullptr;
             switch (dir) {
             case 0: fv = &block.field.inv_xi; break;
@@ -443,28 +487,33 @@ inline void FluxHaloExchange::exchange(LocalBlock& block,
             }
             if (fv) pack_flux(*fv, dir, info);
 
-            // Post non-blocking send and receive
             int tag = std::min(block.block_id, info.target_block) * 100
-                    + face * 10 + dir + 200;  // +200 offset vs cell-centered exchange
+                    + std::min(face, face ^ 1) * 10 + dir + 200;
 
-            MPI_Request sreq, rreq;
+            face_send_idx[face] = n_reqs;
             MPI_Isend(info.send_buf.data(), total_sz, MPI_DOUBLE,
-                      info.target_rank, tag, comm, &sreq);
-            MPI_Irecv(info.recv_buf.data(), total_sz, MPI_DOUBLE,
-                      info.target_rank, tag, comm, &rreq);
-
-            MPI_Wait(&sreq, MPI_STATUS_IGNORE);
-            MPI_Wait(&rreq, MPI_STATUS_IGNORE);
-
-            // Unpack received data into ghost face positions
-            FluxVars* fv_out = nullptr;
-            switch (dir) {
-            case 0: fv_out = &block.field.inv_xi; break;
-            case 1: fv_out = &block.field.inv_eta; break;
-            case 2: fv_out = &block.field.inv_zeta; break;
-            }
-            if (fv_out) unpack_flux(*fv_out, dir, info);
+                      info.target_rank, tag, comm, &all_reqs[n_reqs++]);
         }
+    }
+
+    // ---- Phase 3: Waitall + Unpack ----
+    if (n_reqs > 0) {
+        MPI_Waitall(n_reqs, all_reqs, MPI_STATUSES_IGNORE);
+    }
+
+    for (int face = 0; face < 6; ++face) {
+        FluxFaceInfo& info = faces_[face];
+        if (!info.active || !info.is_remote) continue;
+
+        int dir = face_dir[face];
+
+        FluxVars* fv_out = nullptr;
+        switch (dir) {
+        case 0: fv_out = &block.field.inv_xi; break;
+        case 1: fv_out = &block.field.inv_eta; break;
+        case 2: fv_out = &block.field.inv_zeta; break;
+        }
+        if (fv_out) unpack_flux(*fv_out, dir, info);
     }
 }
 
@@ -481,33 +530,54 @@ inline void FluxHaloExchange::exchange_face_arrays(
     MPI_Comm comm = MPI_COMM_WORLD;
     Int n_arrs = static_cast<Int>(face_arrs.size());
 
-    for (int face = 0; face < 6; ++face) {
-        // Only process faces matching the given direction
-        if (face / 2 != dir) continue;
+    // 3-phase approach: post all Irecvs, then Isends, then Waitall.
+    MPI_Request all_reqs[4];  // max 2 faces per direction (MIN + MAX)
+    int n_reqs = 0;
+    int face_recv_idx[6] = {-1, -1, -1, -1, -1, -1};
+    int face_send_idx[6] = {-1, -1, -1, -1, -1, -1};
 
+    // ---- Phase 1: Post Irecvs for both faces in this direction ----
+    for (int fi = 0; fi < 2; ++fi) {
+        int face = 2 * dir + fi;  // MIN then MAX
         FluxFaceInfo& info = faces_[face];
-        if (!info.active) continue;
-
-        // Only handle remote (MPI) exchange; local copy is caller's responsibility
-        if (!info.is_remote) continue;
+        if (!info.active || !info.is_remote) continue;
 
         Int n_faces = info.n_faces;
         Int dim1    = info.dim1;
         Int dim2    = info.dim2;
-        Int s0      = info.send_begin;
-        Int r0      = info.recv_begin;
-
-        // Single component size: n_faces × dim1 × dim2
         Int comp_sz = n_faces * dim1 * dim2;
         Int total_sz = n_arrs * comp_sz;
 
-        // Resize buffers if needed
-        if (static_cast<Int>(info.send_buf.size()) < total_sz) {
-            info.send_buf.resize(total_sz);
+        if (static_cast<Int>(info.recv_buf.size()) < total_sz) {
             info.recv_buf.resize(total_sz);
         }
 
-        // ---- Pack all arrays sequentially into send buffer ----
+        int tag = std::min(block.block_id, info.target_block) * 100
+                + std::min(face, face ^ 1) * 10 + dir + 300;
+
+        face_recv_idx[face] = n_reqs;
+        MPI_Irecv(info.recv_buf.data(), total_sz, MPI_DOUBLE,
+                  info.target_rank, tag, comm, &all_reqs[n_reqs++]);
+    }
+
+    // ---- Phase 2: Pack + Isend for both faces in this direction ----
+    for (int fi = 0; fi < 2; ++fi) {
+        int face = 2 * dir + fi;
+        FluxFaceInfo& info = faces_[face];
+        if (!info.active || !info.is_remote) continue;
+
+        Int n_faces = info.n_faces;
+        Int dim1    = info.dim1;
+        Int dim2    = info.dim2;
+        Int comp_sz = n_faces * dim1 * dim2;
+        Int total_sz = n_arrs * comp_sz;
+        Int s0      = info.send_begin;
+
+        if (static_cast<Int>(info.send_buf.size()) < total_sz) {
+            info.send_buf.resize(total_sz);
+        }
+
+        // Pack all arrays
         Real* buf = info.send_buf.data();
         for (Int n = 0; n < n_arrs; ++n) {
             const MultiArray3D<Real>& arr = *face_arrs[n];
@@ -529,20 +599,30 @@ inline void FluxHaloExchange::exchange_face_arrays(
             }
         }
 
-        // ---- MPI exchange ----
         int tag = std::min(block.block_id, info.target_block) * 100
-                + face * 10 + dir + 300;  // +300 offset for face-array exchange
+                + std::min(face, face ^ 1) * 10 + dir + 300;
 
-        MPI_Request sreq, rreq;
+        face_send_idx[face] = n_reqs;
         MPI_Isend(info.send_buf.data(), total_sz, MPI_DOUBLE,
-                  info.target_rank, tag, comm, &sreq);
-        MPI_Irecv(info.recv_buf.data(), total_sz, MPI_DOUBLE,
-                  info.target_rank, tag, comm, &rreq);
+                  info.target_rank, tag, comm, &all_reqs[n_reqs++]);
+    }
 
-        MPI_Wait(&sreq, MPI_STATUS_IGNORE);
-        MPI_Wait(&rreq, MPI_STATUS_IGNORE);
+    // ---- Phase 3: Waitall + Unpack ----
+    if (n_reqs > 0) {
+        MPI_Waitall(n_reqs, all_reqs, MPI_STATUSES_IGNORE);
+    }
 
-        // ---- Unpack into all arrays ----
+    for (int fi = 0; fi < 2; ++fi) {
+        int face = 2 * dir + fi;
+        FluxFaceInfo& info = faces_[face];
+        if (!info.active || !info.is_remote) continue;
+
+        Int n_faces = info.n_faces;
+        Int dim1    = info.dim1;
+        Int dim2    = info.dim2;
+        Int comp_sz = n_faces * dim1 * dim2;
+        Int r0      = info.recv_begin;
+
         const Real* recv = info.recv_buf.data();
         for (Int n = 0; n < n_arrs; ++n) {
             MultiArray3D<Real>& arr = *face_arrs[n];

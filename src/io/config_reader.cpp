@@ -193,6 +193,8 @@ void ConfigReader::set_control(Config& cfg, const std::string& key,
         cfg.ng = static_cast<Int>(std::atoi(value.c_str()));
     } else if (key == "restart_file") {
         cfg.restart_file = value;  // basename for restart (e.g. "restart_000500")
+    } else if (key == "output_time_interval") {
+        cfg.output_time_interval = static_cast<Real>(std::atof(value.c_str()));
     } else {
         std::cerr << "ConfigReader: warning: unknown key \""
                   << key << "\" in [control] section\n";
@@ -285,6 +287,8 @@ void ConfigReader::set_output(Config& cfg, const std::string& key,
         cfg.output_dir = value;
     } else if (key == "output_time_interval") {
         cfg.output_time_interval = static_cast<Real>(std::atof(value.c_str()));
+    } else if (key == "history_x_locations") {
+        cfg.history_x_locations = value;
     } else {
         std::cerr << "ConfigReader: warning: unknown key \""
                   << key << "\" in [output] section\n";

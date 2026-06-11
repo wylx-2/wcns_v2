@@ -176,6 +176,11 @@ struct Config {
     /// Physical time interval for output (0 = disabled, use step-based only)
     Real output_time_interval = 0.0;
 
+    /// History monitor: x-locations for u-velocity cross-section averaging.
+    /// Comma-separated values parsed from config, e.g. "0.0, 3.14159"
+    /// Default empty = no history monitoring.
+    std::string history_x_locations = "";
+
     // =========================================================================
     // Boundary condition
     // =========================================================================

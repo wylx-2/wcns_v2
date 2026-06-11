@@ -2,6 +2,7 @@
 
 #include "utils/types.h"
 #include "parallel/local_block.h"
+#include "parallel/parallel_env.h"
 #include <mpi.h>
 #include <vector>
 
@@ -25,18 +26,23 @@ public:
     void setup(const LocalBlock& block);
 
     /// Exchange ghost data for a single 3D array (blocking).
-    void exchange(MultiArray3D<Real>& arr, const LocalBlock& block);
+    /// @param all_blocks  All local blocks on this process (for same-rank copy)
+    void exchange(MultiArray3D<Real>& arr, const LocalBlock& block,
+                  const std::vector<LocalBlock>& all_blocks);
 
     /// Exchange multiple 3D arrays in a single MPI transaction (blocking).
     /// All arrays must have the same dimensions as the block's grid (nci×ncj×nck).
+    /// @param all_blocks  All local blocks on this process (for same-rank copy)
     void exchange_multi(const std::vector<MultiArray3D<Real>*>& arrays,
-                        const LocalBlock& block);
+                        const LocalBlock& block,
+                        const std::vector<LocalBlock>& all_blocks);
 
     /// Start non-blocking exchange for multiple arrays.
     /// Returns immediately; communication proceeds in the background.
     /// Call wait_exchange() before accessing ghost cells.
     void start_exchange(const std::vector<MultiArray3D<Real>*>& arrays,
-                        const LocalBlock& block);
+                        const LocalBlock& block,
+                        const std::vector<LocalBlock>& all_blocks);
 
     /// Wait for the non-blocking exchange started by start_exchange() to complete.
     void wait_exchange(const LocalBlock& block);
@@ -70,11 +76,10 @@ private:
                      const LocalBlock& block, const Real* buf, Int offset);
 
     /// Perform a direct (same-process) copy from neighbor block.
+    /// Packs interior data from @p neighbor at ni.target_face and unpacks
+    /// into ghost cells of @p arr at @p face on @p block.
     void copy_local(MultiArray3D<Real>& arr, int face,
                     const LocalBlock& block, const LocalBlock& neighbor);
-
-    // Store pointers to all local blocks for same-process halo copy
-    const std::vector<LocalBlock>* all_blocks_ = nullptr;
 
     // Number of arrays packed (set by start_exchange, used by wait_exchange)
     Int n_arrays_packed_ = 0;
