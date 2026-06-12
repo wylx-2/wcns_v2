@@ -78,10 +78,6 @@ void CGNSReader::read_zone(Int base, Int zone_idx, Grid& grid, Int ng) {
     // --- Coordinates ---
     read_coords(B, Z, grid);
 
-    // --- Cell centers ---
-    grid.compute_cell_centers();
-    grid.compute_cell_volumes();
-
     // --- Boundary conditions ---
     read_bc(B, Z, grid);
 
@@ -228,6 +224,15 @@ void CGNSReader::read_1to1(int B, int Z, Grid& grid) {
         conn.transform[0] = transform[0];
         conn.transform[1] = transform[1];
         conn.transform[2] = transform[2];
+
+        // Detect which face this connection lies on (current zone side)
+        if (conn.imin == conn.imax) {
+            conn.face = (conn.imin == 1) ? 0 : 1;  // IMIN or IMAX
+        } else if (conn.jmin == conn.jmax) {
+            conn.face = (conn.jmin == 1) ? 2 : 3;  // JMIN or JMAX
+        } else if (conn.kmin == conn.kmax) {
+            conn.face = (conn.kmin == 1) ? 4 : 5;  // KMIN or KMAX
+        }
 
         // Try to read periodic properties
         float rot_ctr[3] = {0, 0, 0};

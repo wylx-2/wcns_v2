@@ -206,6 +206,7 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
     Int nci = lb.field.ni();
     Int ncj = lb.field.nj();
     Int nck = lb.field.nk();
+    Int ng  = lb.grid.ng;
 
     bool fp[6];
     build_periodic_mask(lb, fp);
@@ -278,9 +279,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
             }
         }
         // Differentiate
-        InterpDiff::derivative_from_faces(px, dpx, 0, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 0, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 0, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 0, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 0, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 0, dh, ng, fp);
         // Accumulate (init with dxi part, deta/dzeta added in later directions)
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
@@ -313,9 +314,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
                 }
             }
         }
-        InterpDiff::derivative_from_faces(px, dpx, 0, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 0, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 0, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 0, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 0, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 0, dh, ng, fp);
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
         for (Int i = 0; i < nci; ++i) {
@@ -347,9 +348,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
                 }
             }
         }
-        InterpDiff::derivative_from_faces(px, dpx, 0, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 0, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 0, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 0, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 0, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 0, dh, ng, fp);
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
         for (Int i = 0; i < nci; ++i) {
@@ -381,9 +382,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
                 }
             }
         }
-        InterpDiff::derivative_from_faces(px, dpx, 0, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 0, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 0, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 0, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 0, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 0, dh, ng, fp);
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
         for (Int i = 0; i < nci; ++i) {
@@ -428,9 +429,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
                 }
             }
         }
-        InterpDiff::derivative_from_faces(px, dpx, 1, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 1, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 1, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 1, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 1, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 1, dh, ng, fp);
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
         for (Int i = 0; i < nci; ++i) {
@@ -462,9 +463,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
                 }
             }
         }
-        InterpDiff::derivative_from_faces(px, dpx, 1, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 1, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 1, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 1, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 1, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 1, dh, ng, fp);
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
         for (Int i = 0; i < nci; ++i) {
@@ -496,9 +497,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
                 }
             }
         }
-        InterpDiff::derivative_from_faces(px, dpx, 1, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 1, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 1, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 1, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 1, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 1, dh, ng, fp);
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
         for (Int i = 0; i < nci; ++i) {
@@ -530,9 +531,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
                 }
             }
         }
-        InterpDiff::derivative_from_faces(px, dpx, 1, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 1, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 1, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 1, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 1, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 1, dh, ng, fp);
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
         for (Int i = 0; i < nci; ++i) {
@@ -577,9 +578,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
                 }
             }
         }
-        InterpDiff::derivative_from_faces(px, dpx, 2, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 2, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 2, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 2, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 2, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 2, dh, ng, fp);
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
         for (Int i = 0; i < nci; ++i) {
@@ -611,9 +612,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
                 }
             }
         }
-        InterpDiff::derivative_from_faces(px, dpx, 2, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 2, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 2, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 2, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 2, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 2, dh, ng, fp);
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
         for (Int i = 0; i < nci; ++i) {
@@ -645,9 +646,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
                 }
             }
         }
-        InterpDiff::derivative_from_faces(px, dpx, 2, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 2, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 2, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 2, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 2, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 2, dh, ng, fp);
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
         for (Int i = 0; i < nci; ++i) {
@@ -679,9 +680,9 @@ inline void ViscidRHS::compute_gradients(LocalBlock& lb,
                 }
             }
         }
-        InterpDiff::derivative_from_faces(px, dpx, 2, dh, fp);
-        InterpDiff::derivative_from_faces(py, dpy, 2, dh, fp);
-        InterpDiff::derivative_from_faces(pz, dpz, 2, dh, fp);
+        InterpDiff::derivative_from_faces(px, dpx, 2, dh, ng, fp);
+        InterpDiff::derivative_from_faces(py, dpy, 2, dh, ng, fp);
+        InterpDiff::derivative_from_faces(pz, dpz, 2, dh, ng, fp);
         for (Int k = 0; k < nck; ++k)
         for (Int j = 0; j < ncj; ++j)
         for (Int i = 0; i < nci; ++i) {

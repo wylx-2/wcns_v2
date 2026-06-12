@@ -137,11 +137,11 @@ inline LocalBlock LocalBlock::from_sub_zone(
     lb.grid.compute_cell_centers();
     lb.grid.compute_cell_volumes();
 
-    // ---- Copy periodic connectivity from full zone (must be BEFORE metrics) ----
-    // The sub-block's grid needs periodic connection entries so that
-    // build_face_periodic() correctly identifies KMIN/KMAX as periodic
+    // ---- Copy connection entries from full zone (must be BEFORE metrics) ----
+    // The sub-block's grid needs 1-to-1 connection entries so that
+    // build_face_connected() correctly identifies physical boundary faces
     // for metric derivative computations.  Without this, the coordinate
-    // derivatives near periodic boundaries use wrong one-sided stencils.
+    // derivatives near connected boundaries use wrong one-sided stencils.
     // Must be done before compute_metrics/face_metrics.
     for (Int c = 0; c < full_zone.connections.count(); ++c) {
         const Connectivity& fc = full_zone.connections[c];
@@ -396,7 +396,7 @@ inline bool LocalBlock::is_external_face(int face, const SubBlock& sub,
 inline const Connectivity* LocalBlock::find_periodic_at_face(
         const Grid& full_zone, int face, const SubBlock& /*sub*/) {
     // Use the existing Grid method
-    return full_zone.find_periodic_connection(face);
+    return full_zone.find_face_connection(face);
 }
 
 inline int LocalBlock::find_split_neighbor(

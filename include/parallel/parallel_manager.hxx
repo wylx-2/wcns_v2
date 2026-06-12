@@ -27,37 +27,43 @@ inline void ParallelManager::initialize(
     Int nz = static_cast<Int>(zones.size());
 
     // ---- Step 2: Extend ghost layers on all zones ----
+    // Ghost nodes are initially filled by linear extrapolation for all faces.
+    // 1-to-1 connection faces are overwritten in Step 2b below.
     for (auto& z : zones) {
         z.extend_ghost_layers();
     }
 
-    // ---- Step 2b: Fix interface ghost nodes using 1-to-1 connectivity ----
-    // For inter-zone connections, ghost node coordinates should come from
-    // the donor zone's interior nodes, not from linear extrapolation.
+    // ---- Step 2b: Fix ghost coordinates on all 1-to-1 connection faces ----
+    // Both within-zone periodic and inter-zone interface connections are
+    // handled uniformly: each ghost node copies its coordinate from the
+    // corresponding donor interior node, applying the connection's translation.
+    //
+    //   ghost_coord = donor_interior_coord - translation
+    //
+    // The donor may be the same zone (periodic) or a different zone (interface).
     for (auto& z : zones) {
         for (int face = 0; face < 6; ++face) {
             const Connectivity* conn = z.find_face_connection(face);
-            if (!conn) continue;
-            // Within-zone connections are already handled correctly
-            // by fill_ghost_face_periodic during extend_ghost_layers.
-            if (conn->donor_name == z.name) continue;
+            if (!conn) continue;  // BC face — extrapolation is correct
 
-            // Find donor zone by name
+            // Find donor zone (may be self for periodic connections)
             Grid* donor = nullptr;
-            for (auto& d : zones) {
-                if (d.name == conn->donor_name) { donor = &d; break; }
+            if (conn->donor_name == z.name) {
+                donor = &z;
+            } else {
+                for (auto& d : zones) {
+                    if (d.name == conn->donor_name) { donor = &d; break; }
+                }
             }
             if (donor) {
-                z.fix_interface_ghost(face, *donor, *conn);
+                z.fill_ghost_face_from_donor(face, *donor, *conn);
             }
         }
     }
 
-    // ---- Step 2c: Recompute cell centers (ghost nodes changed in 2b) ----
-    // Cell centers were originally computed inside extend_ghost_layers()
-    // from extrapolated ghost nodes.  After fix_interface_ghost corrected
-    // the ghost node coordinates, the cell-center coordinates and volumes
-    // must be recomputed.
+    // ---- Step 2c: Recompute cell centers and volumes ----
+    // Ghost node coordinates were modified in 2b, so cell-center coordinates
+    // and volumes must be updated.
     for (auto& z : zones) {
         z.compute_cell_centers();
         z.compute_cell_volumes();

@@ -70,10 +70,11 @@ public:
     /// @param da    Output derivative array (ni×nj×nk), must be pre-allocated
     /// @param dir   Direction: 0 = ξ(i), 1 = η(j), 2 = ζ(k)
     /// @param dh    Grid spacing in computational space (Δξ, Δη, or Δζ)
+    /// @param ng    Number of ghost cell layers (used for periodic ghost fix)
     /// @param face_is_periodic  [IMIN,IMAX,JMIN,JMAX,KMIN,KMAX]
     static void derivative_from_faces(const MultiArray3D<Real>& af,
                                        MultiArray3D<Real>& da,
-                                       int dir, Real dh,
+                                       int dir, Real dh, Int ng,
                                        const bool face_is_periodic[6]);
 
 private:
@@ -142,15 +143,21 @@ private:
 
     /// Fill half-node array ah[0..n] from cell-center array a[0..n-1].
     /// Convention: ah[i] = a_{i-1/2}.  There are n+1 half-nodes for n cells.
-    /// @param n     number of cell centers in this line
-    /// @param left_periodic, right_periodic — boundary type switches
-    static void interp_line(const Real* a, Real* ah, Int n,
+    /// @param n     number of cell centers in this line (includes ghost)
+    /// @param ng    number of ghost cell layers
+    /// @param left_periodic, right_periodic — boundary type switches.
+    ///        When true, ghost half-nodes are overwritten from the opposite
+    ///        interior (periodic copy) instead of using one-sided stencils.
+    static void interp_line(const Real* a, Real* ah, Int n, Int ng,
                             bool left_periodic, bool right_periodic);
 
     /// Fill derivative array da[0..n-1] from half-node array ah[0..n].
     /// One-sided stencils at absolute ends (cells 0,1 and n-1,n-2);
     /// centered 6-point for cells 2..n-3.
-    static void diff_line(const Real* ah, Real* da, Int n, Real dh,
+    /// @param ng    number of ghost cell layers.
+    ///        When boundaries are periodic, ghost cell derivatives are
+    ///        overwritten from the opposite interior (periodic copy).
+    static void diff_line(const Real* ah, Real* da, Int n, Real dh, Int ng,
                           bool left_periodic, bool right_periodic);
 };
 

@@ -102,18 +102,20 @@ inline Real InterpDiff::diff_right_2nd(const Real* ah, Int i1, Real dh) {
 // 1D line helpers
 // ============================================================================
 
-inline void InterpDiff::interp_line(const Real* a, Real* ah, Int n,
+inline void InterpDiff::interp_line(const Real* a, Real* ah, Int n, Int ng,
                                      bool left_periodic, bool right_periodic) {
-    (void)left_periodic;   // one-sided closure at absolute ends is independent
-    (void)right_periodic;  // of periodicity; ghost data must be valid externally
-
     // Produce n+1 half-nodes ah[0..n] with the convention ah[i] = a_{i-1/2}.
     // One-sided formulas at the absolute ends (h=0,1,2 on the left,
     // h=n,n-1,n-2 on the right); centered 6-point for h=3..n-3.
     //
-    // One-sided closure is applied regardless of periodicity — the array
-    // ends always lack stencil support on one side.  Periodicity only
-    // guarantees that ghost-cell data is valid for the centered stencil.
+    // The one-sided formulas depend on valid ghost-cell data for stencil
+    // support.  When the boundary is truly non-periodic, the ghost data
+    // comes from extrapolation — this is fine for stencil support.
+    //
+    // When the boundary IS periodic, we overwrite the ghost half-nodes
+    // afterwards with a periodic copy from the opposite interior.  This
+    // replaces the one-sided stencil values (which miss the actual
+    // periodic continuation) with the physically correct values.
 
     for (Int h = 0; h <= n; ++h) {
         // --- Absolute left end: first three half-nodes ---
@@ -145,21 +147,47 @@ inline void InterpDiff::interp_line(const Real* a, Real* ah, Int n,
             ah[h] = interp_right_1st(&a[base]);
         }
     }
+
+    // ---- Fix ghost half-nodes for periodic boundaries ----
+    // The one-sided stencils at absolute array ends give values that differ
+    // from the centered-stencil values at the corresponding interior
+    // positions.  For periodic boundaries, overwrite the ghost half-nodes
+    // with the corresponding interior half-nodes to ensure consistency:
+    //   - left:  ah[0..ng-1]           = ah[ni_core..ni_core+ng-1]
+    //   - right: ah[ni_core+ng+1..n]   = ah[ng..2*ng-1]
+    // where n = ni_core + 2*ng.
+    // The periodic shift in coordinate values cancels during the subsequent
+    // diff_line (derivative of a constant shift is zero), so no explicit
+    // shift adjustment is needed here.
+
+    Int ni_core = n - 2 * ng;
+
+    if (left_periodic) {
+        for (Int k = 0; k < ng; ++k) {
+            ah[k] = ah[ni_core + k];
+        }
+    }
+
+    if (right_periodic) {
+        // Right ghost half-nodes: ah[ni_core+ng+1 .. ni_core+2*ng]
+        // map to interior:      ah[ng .. 2*ng-1]
+        for (Int k = 1; k <= ng; ++k) {
+            ah[ni_core + ng + k] = ah[ng + k - 1];
+        }
+    }
 }
 
-inline void InterpDiff::diff_line(const Real* ah, Real* da, Int n, Real dh,
+inline void InterpDiff::diff_line(const Real* ah, Real* da, Int n, Real dh, Int ng,
                                    bool left_periodic, bool right_periodic) {
-    (void)left_periodic;   // one-sided closure at absolute ends is independent
-    (void)right_periodic;  // of periodicity; ghost data must be valid externally
-
     // Compute derivatives at n cell centers from n+1 half-nodes ah[0..n].
     // Convention: ah[i] = a_{i-1/2}.
     //
     // One-sided stencils at the absolute ends: cells i=0,1 (left) and
     // i=n-1,n-2 (right).  Centered 6-point for cells i=2..n-3.
     //
-    // As with interp_line, one-sided closure is applied regardless of
-    // periodicity — it addresses stencil availability at the array ends.
+    // When boundaries are periodic, ghost cell derivatives are overwritten
+    // afterwards from the opposite interior to replace the one-sided values
+    // with the physically correct periodic continuation.
     //
     // diff_center_6pt needs half-nodes i-2 .. i+3 → valid when i>=2, i+3<=n.
 
@@ -186,6 +214,30 @@ inline void InterpDiff::diff_line(const Real* ah, Real* da, Int n, Real dh,
             da[i] = diff_right_1st(ah, n, dh);
         }
     }
+
+    // ---- Fix ghost cell derivatives for periodic boundaries ----
+    // Same principle as interp_line: the one-sided stencils at absolute
+    // array ends produce ghost derivatives that differ from the centered
+    // stencils at the corresponding interior cells.  For periodic
+    // boundaries, overwrite the ghost derivatives with periodic copies.
+    //   - left:  da[0..ng-1]                  = da[ni_core..ni_core+ng-1]
+    //   - right: da[ni_core+ng..ni_core+2*ng-1] = da[ng..2*ng-1]
+    // No shift adjustment is needed — derivatives of periodic functions
+    // are periodic without shift (d/dξ of a constant shift is zero).
+
+    Int ni_core = n - 2 * ng;
+
+    if (left_periodic) {
+        for (Int k = 0; k < ng; ++k) {
+            da[k] = da[ni_core + k];
+        }
+    }
+
+    if (right_periodic) {
+        for (Int k = 0; k < ng; ++k) {
+            da[ni_core + ng + k] = da[ng + k];
+        }
+    }
 }
 
 // ============================================================================
@@ -196,7 +248,6 @@ inline void InterpDiff::derivative(const MultiArray3D<Real>& a,
                                      MultiArray3D<Real>& da,
                                      int dir, Real dh, Int ng,
                                      const bool face_is_periodic[6]) {
-    (void)ng;  // no longer used internally; kept for API compatibility
     Int ni = a.ni(), nj = a.nj(), nk = a.nk();
 
     if (dir == 0) {
@@ -214,8 +265,8 @@ inline void InterpDiff::derivative(const MultiArray3D<Real>& a,
             Real*      ah_line = &ah(0, j, k);
             Real*      da_line = &da(0, j, k);
 
-            interp_line(a_line, ah_line, ni, lp, rp);
-            diff_line(ah_line, da_line, ni, dh, lp, rp);
+            interp_line(a_line, ah_line, ni, ng, lp, rp);
+            diff_line(ah_line, da_line, ni, dh, ng, lp, rp);
         }}
     } else if (dir == 1) {
         // η direction: half-node array (ni, nj+1, nk)
@@ -236,12 +287,12 @@ inline void InterpDiff::derivative(const MultiArray3D<Real>& a,
             std::vector<Real> a_line(nj), ah_line(nj + 1), da_line_buf(nj);
             for (Int j = 0; j < nj; ++j) a_line[j] = a(i, j, k);
 
-            interp_line(a_line.data(), ah_line.data(), nj, lp, rp);
+            interp_line(a_line.data(), ah_line.data(), nj, ng, lp, rp);
 
             // Scatter half-nodes back to 3D array
             for (Int j = 0; j < nj + 1; ++j) ah(i, j, k) = ah_line[j];
 
-            diff_line(ah_line.data(), da_line_buf.data(), nj, dh, lp, rp);
+            diff_line(ah_line.data(), da_line_buf.data(), nj, dh, ng, lp, rp);
 
             for (Int j = 0; j < nj; ++j) da(i, j, k) = da_line_buf[j];
         }}
@@ -259,11 +310,11 @@ inline void InterpDiff::derivative(const MultiArray3D<Real>& a,
             std::vector<Real> a_line(nk), ah_line(nk + 1), da_line_buf(nk);
             for (Int k = 0; k < nk; ++k) a_line[k] = a(i, j, k);
 
-            interp_line(a_line.data(), ah_line.data(), nk, lp, rp);
+            interp_line(a_line.data(), ah_line.data(), nk, ng, lp, rp);
 
             for (Int k = 0; k < nk + 1; ++k) ah(i, j, k) = ah_line[k];
 
-            diff_line(ah_line.data(), da_line_buf.data(), nk, dh, lp, rp);
+            diff_line(ah_line.data(), da_line_buf.data(), nk, dh, ng, lp, rp);
 
             for (Int k = 0; k < nk; ++k) da(i, j, k) = da_line_buf[k];
         }}
@@ -274,7 +325,6 @@ inline void InterpDiff::interp_to_faces(const MultiArray3D<Real>& a,
                                           MultiArray3D<Real>& af,
                                           int dir, Int ng,
                                           const bool face_is_periodic[6]) {
-    (void)ng;  // no longer used internally; kept for API compatibility
     Int ni = a.ni(), nj = a.nj(), nk = a.nk();
 
     if (dir == 0) {
@@ -287,7 +337,7 @@ inline void InterpDiff::interp_to_faces(const MultiArray3D<Real>& a,
             const Real* a_line = &a(0, j, k);
             Real*      af_line = &af(0, j, k);
 
-            interp_line(a_line, af_line, ni, lp, rp);
+            interp_line(a_line, af_line, ni, ng, lp, rp);
         }}
     } else if (dir == 1) {
         // η faces: af size = (ni, nj+1, nk)
@@ -299,7 +349,7 @@ inline void InterpDiff::interp_to_faces(const MultiArray3D<Real>& a,
             std::vector<Real> a_line(nj), af_line(nj + 1);
             for (Int j = 0; j < nj; ++j) a_line[j] = a(i, j, k);
 
-            interp_line(a_line.data(), af_line.data(), nj, lp, rp);
+            interp_line(a_line.data(), af_line.data(), nj, ng, lp, rp);
 
             for (Int j = 0; j < nj + 1; ++j) af(i, j, k) = af_line[j];
         }}
@@ -313,7 +363,7 @@ inline void InterpDiff::interp_to_faces(const MultiArray3D<Real>& a,
             std::vector<Real> a_line(nk), af_line(nk + 1);
             for (Int k = 0; k < nk; ++k) a_line[k] = a(i, j, k);
 
-            interp_line(a_line.data(), af_line.data(), nk, lp, rp);
+            interp_line(a_line.data(), af_line.data(), nk, ng, lp, rp);
 
             for (Int k = 0; k < nk + 1; ++k) af(i, j, k) = af_line[k];
         }}
@@ -326,7 +376,7 @@ inline void InterpDiff::interp_to_faces(const MultiArray3D<Real>& a,
 
 inline void InterpDiff::derivative_from_faces(const MultiArray3D<Real>& af,
                                                MultiArray3D<Real>& da,
-                                               int dir, Real dh,
+                                               int dir, Real dh, Int ng,
                                                const bool face_is_periodic[6]) {
     // af is already a face array (half-node values).  We only need diff_line.
     // For dir=0: af is (ni+1, nj, nk) → da is (ni, nj, nk)
@@ -345,7 +395,7 @@ inline void InterpDiff::derivative_from_faces(const MultiArray3D<Real>& af,
             const Real* af_line = &af(0, j, k);
             Real*       da_line = &da(0, j, k);
 
-            diff_line(af_line, da_line, ni, dh, lp, rp);
+            diff_line(af_line, da_line, ni, dh, ng, lp, rp);
         }}
     } else if (dir == 1) {
         // η direction: af has nj+1 faces (j+1/2), da has nj cells
@@ -357,7 +407,7 @@ inline void InterpDiff::derivative_from_faces(const MultiArray3D<Real>& af,
             std::vector<Real> af_line(nj + 1), da_line_buf(nj);
             for (Int j = 0; j < nj + 1; ++j) af_line[j] = af(i, j, k);
 
-            diff_line(af_line.data(), da_line_buf.data(), nj, dh, lp, rp);
+            diff_line(af_line.data(), da_line_buf.data(), nj, dh, ng, lp, rp);
 
             for (Int j = 0; j < nj; ++j) da(i, j, k) = da_line_buf[j];
         }}
@@ -371,7 +421,7 @@ inline void InterpDiff::derivative_from_faces(const MultiArray3D<Real>& af,
             std::vector<Real> af_line(nk + 1), da_line_buf(nk);
             for (Int k = 0; k < nk + 1; ++k) af_line[k] = af(i, j, k);
 
-            diff_line(af_line.data(), da_line_buf.data(), nk, dh, lp, rp);
+            diff_line(af_line.data(), da_line_buf.data(), nk, dh, ng, lp, rp);
 
             for (Int k = 0; k < nk; ++k) da(i, j, k) = da_line_buf[k];
         }}

@@ -42,3 +42,4 @@ input/
 debug.md
 restart_*.bin
 sol_*.plt
+Jocabian.cpp

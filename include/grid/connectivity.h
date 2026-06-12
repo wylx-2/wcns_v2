@@ -25,11 +25,19 @@ struct Connectivity {
     // A negative value means the direction is reversed.
     Int transform[3];
 
-    // ---- Periodic properties ----
+    // ---- Face orientation ----
+    /// Which face of the current zone this connection lies on.
+    /// 0=IMIN, 1=IMAX, 2=JMIN, 3=JMAX, 4=KMIN, 5=KMAX.  -1 = undetected.
+    int face = -1;
+
+    // ---- Periodic / transform properties ----
+    /// For both periodic and general 1-to-1 connections, these describe
+    /// the spatial relationship between the current zone and the donor.
+    /// Ghost coordinates are filled as: ghost = donor_interior - translation.
     bool is_periodic;
-    Real translation[3];       // periodic translation vector
-    Real rotation_center[3];   // rotation centre for periodic transform
-    Real rotation_angle[3];    // rotation angle for periodic transform
+    Real translation[3];       // translation vector
+    Real rotation_center[3];   // rotation centre
+    Real rotation_angle[3];    // rotation angle
 };
 
 /// Collection of 1-to-1 connectivity entries for a block.

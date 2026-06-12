@@ -128,35 +128,38 @@ public:
     /// @param ck0    Starting cell k-index in the donor for this block
     void extract_metrics_from(const Grid& donor, Int ci0, Int cj0, Int ck0);
 
-    /// Find a periodic 1-to-1 connection covering the given face.
+    /// Find a 1-to-1 connection covering the given face.
     /// face: 0=IMIN, 1=IMAX, 2=JMIN, 3=JMAX, 4=KMIN, 5=KMAX
-    /// Returns nullptr if no periodic connection exists for this face.
-    const Connectivity* find_periodic_connection(int face) const;
-
-    /// Find any 1-to-1 connection covering the given face (periodic or interface).
+    /// Returns nullptr if no connection exists for this face.
     const Connectivity* find_face_connection(int face) const;
 
-    /// Fix ghost node coordinates on one face by copying from a donor zone.
-    /// Used for inter-zone block interfaces (non-periodic 1-to-1 connections).
-    /// The donor zone must already have its ghost layers extended.
-    void fix_interface_ghost(int face, const Grid& donor,
-                             const Connectivity& conn);
+    /// Fill ghost node coordinates on one face by copying from a donor zone's
+    /// interior nodes, applying the connection's translation.
+    ///
+    /// Handles both within-zone periodic connections (donor == *this) and
+    /// inter-zone block interfaces (donor is a different zone) uniformly.
+    ///
+    /// Ghost coordinate = donor_interior_coordinate - translation
+    ///
+    /// The donor zone must already have its core data in place (post extend).
+    void fill_ghost_face_from_donor(int face, const Grid& donor,
+                                    const Connectivity& conn);
 
     /// Print grid summary to stdout.
     void print_summary() const;
 
 private:
-    /// Fill ghost node coordinates on all 6 sides.
+    /// Fill ghost node coordinates on all 6 sides by linear extrapolation.
+    /// Connection-face ghosts are overwritten later by fill_ghost_face_from_donor
+    /// (called from ParallelManager after all zones have been extended).
     void fill_ghost_nodes();
 
     /// Fill ghost nodes on one face by linear extrapolation.
     void fill_ghost_face_extrapolate(int face);
 
-    /// Fill ghost nodes on one face by copying from a periodic donor.
-    void fill_ghost_face_periodic(int face, const Connectivity& conn);
-
-    /// Build the face_periodic[6] mask from the connectivity list.
-    void build_face_periodic(bool face_periodic[6]) const;
+    /// Build the face_connected[6] mask from the connectivity list.
+    /// A face is "connected" if it has any 1-to-1 connection (periodic or interface).
+    void build_face_connected(bool face_connected[6]) const;
 
     /// Compute the 3 coordinate derivatives in one direction (x_d, y_d, z_d)
     /// from cell-center coordinates.  Updates the three output arrays.

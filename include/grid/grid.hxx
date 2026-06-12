@@ -129,368 +129,213 @@ inline void Grid::extend_ghost_layers() {
 }
 
 inline void Grid::fill_ghost_nodes() {
+    // All faces start with linear extrapolation.
+    // Faces with 1-to-1 connectivity are later overwritten by
+    // fill_ghost_face_from_donor() (called from ParallelManager after
+    // all zones have been extended, so donor interior data is available).
     for (int face = 0; face < 6; ++face) {
-        const Connectivity* conn = find_periodic_connection(face);
-        if (conn) {
-            fill_ghost_face_periodic(face, *conn);
-        } else {
-            fill_ghost_face_extrapolate(face);
-        }
+        fill_ghost_face_extrapolate(face);
     }
-}
-
-inline const Connectivity* Grid::find_periodic_connection(int face) const {
-    // face: 0=IMIN, 1=IMAX, 2=JMIN, 3=JMAX, 4=KMIN, 5=KMAX
-    // A connection covers a face when the face's normal dimension is
-    // collapsed in the point range and the constant index lies at the
-    // corresponding boundary (1 for MIN, ni_core for MAX, etc.).
-    // CGNS range indices are 1-based.
-
-    for (Int c = 0; c < connections.count(); ++c) {
-        const Connectivity& conn = connections[c];
-        if (!conn.is_periodic) continue;
-
-        switch (face) {
-        case 0: // IMIN
-            if (conn.imin == conn.imax && conn.imin == 1) return &conn;
-            break;
-        case 1: // IMAX
-            if (conn.imin == conn.imax && conn.imin == ni_core) return &conn;
-            break;
-        case 2: // JMIN
-            if (conn.jmin == conn.jmax && conn.jmin == 1) return &conn;
-            break;
-        case 3: // JMAX
-            if (conn.jmin == conn.jmax && conn.jmin == nj_core) return &conn;
-            break;
-        case 4: // KMIN
-            if (conn.kmin == conn.kmax && conn.kmin == 1) return &conn;
-            break;
-        case 5: // KMAX
-            if (conn.kmin == conn.kmax && conn.kmin == nk_core) return &conn;
-            break;
-        }
-    }
-    return nullptr;
 }
 
 inline const Connectivity* Grid::find_face_connection(int face) const {
-    // Same logic as find_periodic_connection, but accepts ALL 1-to-1
-    // connections (both periodic and inter-zone interfaces).
+    // Use the pre-computed conn.face when available.
     for (Int c = 0; c < connections.count(); ++c) {
         const Connectivity& conn = connections[c];
-
-        switch (face) {
-        case 0: // IMIN
-            if (conn.imin == conn.imax && conn.imin == 1) return &conn;
-            break;
-        case 1: // IMAX
-            if (conn.imin == conn.imax && conn.imin == ni_core) return &conn;
-            break;
-        case 2: // JMIN
-            if (conn.jmin == conn.jmax && conn.jmin == 1) return &conn;
-            break;
-        case 3: // JMAX
-            if (conn.jmin == conn.jmax && conn.jmin == nj_core) return &conn;
-            break;
-        case 4: // KMIN
-            if (conn.kmin == conn.kmax && conn.kmin == 1) return &conn;
-            break;
-        case 5: // KMAX
-            if (conn.kmin == conn.kmax && conn.kmin == nk_core) return &conn;
-            break;
-        }
+        if (conn.face == face) return &conn;
     }
     return nullptr;
 }
 
-inline void Grid::fix_interface_ghost(int face, const Grid& donor,
-                                       const Connectivity& conn) {
-    // Identify the donor face from the connection donor range.
-    // The collapsed dimension gives the face direction; the constant
-    // index (1 for MIN, donor.ni_core for MAX) gives the side.
+inline void Grid::fill_ghost_face_from_donor(int face, const Grid& donor,
+                                              const Connectivity& conn) {
+    // ========================================================================
+    // Unified ghost node coordinate filling for all 1-to-1 connections.
+    //
+    // CGNS 1-to-1 point correspondence:
+    //   Id2 = T · (Id1 - Begin1) + Begin2
+    // where Id1 is the 1-based index on the current zone, Id2 on the donor,
+    // Begin1 = (imin, jmin, kmin), Begin2 = (donor_imin, donor_jmin, donor_kmin),
+    // and T is the signed permutation matrix encoded by transform[3].
+    //
+    // Ghost coordinate = donor_interior_coord - translation
+    // ========================================================================
+
+    // ---- Identify the donor face from the connection donor range ----
     int donor_face = -1;
     if (conn.donor_imin == conn.donor_imax) {
-        donor_face = (conn.donor_imin == 1) ? 0 : 1;  // IMIN or IMAX
+        donor_face = (conn.donor_imin == 1) ? 0 : 1;
     } else if (conn.donor_jmin == conn.donor_jmax) {
-        donor_face = (conn.donor_jmin == 1) ? 2 : 3;  // JMIN or JMAX
+        donor_face = (conn.donor_jmin == 1) ? 2 : 3;
     } else if (conn.donor_kmin == conn.donor_kmax) {
-        donor_face = (conn.donor_kmin == 1) ? 4 : 5;  // KMIN or KMAX
+        donor_face = (conn.donor_kmin == 1) ? 4 : 5;
     }
 
-    int cur_dim   = face / 2;
-    bool cur_is_high  = (face % 2 == 1);
-    int donor_dim = donor_face / 2;
+    int cur_dim      = face / 2;
+    bool cur_is_high = (face % 2 == 1);
+    int donor_dim    = donor_face / 2;
     bool donor_is_high = (donor_face % 2 == 1);
 
-    // Periodic translation — for inter-zone periodic connections,
-    // ghost = donor_node - translation (same convention as fill_ghost_face_periodic)
+    // Direction-mismatched connections (e.g. rotated blocks) — TODO
+    if (cur_dim != donor_dim) return;
+
     Real tx = conn.translation[0];
     Real ty = conn.translation[1];
     Real tz = conn.translation[2];
 
-    if (cur_dim != donor_dim) {
-        // Direction-mismatched connections (e.g. rotated blocks)
-        // are not yet supported — fall back to extrapolation value.
-        return;
-    }
+    // ---- CGNS transform helper ----
+    // Maps a face point from current to donor using the CGNS 1-to-1 formula.
+    //
+    // Input:  (I1, J1, K1) — 1-based core indices on the current zone.
+    //         These should lie within [imin:imax, jmin:jmax, kmin:kmax];
+    //         values outside are clamped before the mapping.
+    //
+    // Output: (I2, J2, K2) — 1-based core indices on the donor zone.
+    //
+    // For each current-direction d with offset = Id1[d] - Begin1[d]:
+    //   If transform[d] > 0: output[|t|-1] = donor_begin[|t|-1] + offset
+    //   If transform[d] < 0: output[|t|-1] = donor_end[|t|-1]   - offset
+    // where |t| ∈ {1,2,3} identifies the donor index direction.
+    auto map_cgns_point = [&](Int I1, Int J1, Int K1,
+                               Int& I2, Int& J2, Int& K2) {
+        // Clamp to connection range (corner ghost regions may fall outside)
+        Int i1c = std::clamp(I1, conn.imin, conn.imax);
+        Int j1c = std::clamp(J1, conn.jmin, conn.jmax);
+        Int k1c = std::clamp(K1, conn.kmin, conn.kmax);
 
-    // Ghost node copying: the ghost on this zone's face corresponds to
-    // interior nodes of the donor zone.  For a MIN-side face, donor
-    // interior is at donor.ng + d (inward).  For a MAX-side face,
-    // donor interior is at donor.ng + donor.ni_core - 1 - d (inward).
+        Int offset[3] = {i1c - conn.imin, j1c - conn.jmin, k1c - conn.kmin};
+        Int dbeg[3]   = {conn.donor_imin, conn.donor_jmin, conn.donor_kmin};
+        Int dend[3]   = {conn.donor_imax, conn.donor_jmax, conn.donor_kmax};
+        Int result[3] = {0, 0, 0};
+
+        for (int d = 0; d < 3; ++d) {
+            Int t = conn.transform[d];
+            int tgt = std::abs(static_cast<int>(t)) - 1;  // 0=i, 1=j, 2=k
+            if (t > 0)
+                result[tgt] = dbeg[tgt] + offset[d];
+            else
+                result[tgt] = dend[tgt] - offset[d];
+        }
+        I2 = result[0];  J2 = result[1];  K2 = result[2];
+    };
+
+    // ---- Helper: convert 1-based core index to 0-based extended index ----
+    auto to_extended = [](Int idx_1b, Int ng_d) -> Int {
+        return idx_1b - 1 + ng_d;
+    };
+
+    // ---- Helper: step inward from a donor face by d ghost layers ----
+    // For a MIN donor face, interior node is at ng + d (inward).
+    // For a MAX donor face, interior node is at ng + core - 1 - d (inward).
+    auto step_inward = [&](Int d, Int core, Int ng_d) -> Int {
+        if (donor_is_high)
+            return ng_d + core - 1 - d;
+        else
+            return ng_d + d;
+    };
+
+    // ---- Ghost loop ----
+    // For each ghost node on the current face, we:
+    //  1. Project it to the face boundary → get 1-based face point
+    //  2. Map the face point to the donor face via CGNS transform
+    //  3. Step inward from the donor face by the ghost layer distance
+    //  4. Copy the coordinate (minus translation)
 
     if (cur_dim == 0) {
+        // ---- I-face (IMIN or IMAX) ----
         Int i_start, i_end;
+        Int i_face_1b;  // 1-based i-index of the face boundary
         if (!cur_is_high) {
-            // IMIN ghost: i = 0 .. ng-1
-            i_start = 0;
-            i_end   = ng;
+            i_start = 0;        i_end = ng;            // IMIN ghost
+            i_face_1b = 1;                             // boundary at i=1
         } else {
-            // IMAX ghost: i = ng+ni_core .. ni-1
-            i_start = ng + ni_core;
-            i_end   = ni;
+            i_start = ng + ni_core;  i_end = ni;       // IMAX ghost
+            i_face_1b = ni_core;                       // boundary at i=ni_core
         }
 
         for (Int k = 0; k < nk; ++k) {
         for (Int j = 0; j < nj; ++j) {
         for (Int i = i_start; i < i_end; ++i) {
-            Int d;
-            if (!cur_is_high) {
-                d = ng - i;                          // i=0→d=ng, i=ng-1→d=1
-            } else {
-                d = i - (ng + ni_core) + 1;          // i=ng+ni_core→d=1
-            }
+            Int d = (!cur_is_high) ? (ng - i) : (i - (ng + ni_core) + 1);
 
-            Int donor_i;
-            if (!donor_is_high) {
-                donor_i = donor.ng + d;              // inward from donor MIN face
-            } else {
-                donor_i = donor.ng + donor.ni_core - 1 - d;  // inward from donor MAX face
-            }
+            // Current face point in 1-based core
+            Int J1 = j - ng + 1;
+            Int K1 = k - ng + 1;
 
-            node_x(i, j, k) = donor.node_x(donor_i, j, k) - tx;
-            node_y(i, j, k) = donor.node_y(donor_i, j, k) - ty;
-            node_z(i, j, k) = donor.node_z(donor_i, j, k) - tz;
+            // Map to donor face
+            Int I2, J2, K2;
+            map_cgns_point(i_face_1b, J1, K1, I2, J2, K2);
+
+            // Donor interior: normal = step inward, tangential = mapped face
+            Int di = step_inward(d, donor.ni_core, donor.ng);
+            Int dj = to_extended(J2, donor.ng);
+            Int dk = to_extended(K2, donor.ng);
+
+            node_x(i, j, k) = donor.node_x(di, dj, dk) - tx;
+            node_y(i, j, k) = donor.node_y(di, dj, dk) - ty;
+            node_z(i, j, k) = donor.node_z(di, dj, dk) - tz;
         }}}
     } else if (cur_dim == 1) {
+        // ---- J-face (JMIN or JMAX) ----
         Int j_start, j_end;
+        Int j_face_1b;
         if (!cur_is_high) {
-            j_start = 0;
-            j_end   = ng;
+            j_start = 0;        j_end = ng;
+            j_face_1b = 1;
         } else {
-            j_start = ng + nj_core;
-            j_end   = nj;
+            j_start = ng + nj_core;  j_end = nj;
+            j_face_1b = nj_core;
         }
 
         for (Int k = 0; k < nk; ++k) {
         for (Int j = j_start; j < j_end; ++j) {
         for (Int i = 0; i < ni; ++i) {
-            Int d;
-            if (!cur_is_high) {
-                d = ng - j;
-            } else {
-                d = j - (ng + nj_core) + 1;
-            }
+            Int d = (!cur_is_high) ? (ng - j) : (j - (ng + nj_core) + 1);
 
-            Int donor_j;
-            if (!donor_is_high) {
-                donor_j = donor.ng + d;
-            } else {
-                donor_j = donor.ng + donor.nj_core - 1 - d;
-            }
+            Int I1 = i - ng + 1;
+            Int K1 = k - ng + 1;
 
-            node_x(i, j, k) = donor.node_x(i, donor_j, k) - tx;
-            node_y(i, j, k) = donor.node_y(i, donor_j, k) - ty;
-            node_z(i, j, k) = donor.node_z(i, donor_j, k) - tz;
+            Int I2, J2, K2;
+            map_cgns_point(I1, j_face_1b, K1, I2, J2, K2);
+
+            Int di = to_extended(I2, donor.ng);
+            Int dj = step_inward(d, donor.nj_core, donor.ng);
+            Int dk = to_extended(K2, donor.ng);
+
+            node_x(i, j, k) = donor.node_x(di, dj, dk) - tx;
+            node_y(i, j, k) = donor.node_y(di, dj, dk) - ty;
+            node_z(i, j, k) = donor.node_z(di, dj, dk) - tz;
         }}}
     } else { // cur_dim == 2
+        // ---- K-face (KMIN or KMAX) ----
         Int k_start, k_end;
+        Int k_face_1b;
         if (!cur_is_high) {
-            k_start = 0;
-            k_end   = ng;
+            k_start = 0;        k_end = ng;
+            k_face_1b = 1;
         } else {
-            k_start = ng + nk_core;
-            k_end   = nk;
+            k_start = ng + nk_core;  k_end = nk;
+            k_face_1b = nk_core;
         }
 
         for (Int k = k_start; k < k_end; ++k) {
         for (Int j = 0; j < nj; ++j) {
         for (Int i = 0; i < ni; ++i) {
-            Int d;
-            if (!cur_is_high) {
-                d = ng - k;
-            } else {
-                d = k - (ng + nk_core) + 1;
-            }
+            Int d = (!cur_is_high) ? (ng - k) : (k - (ng + nk_core) + 1);
 
-            Int donor_k;
-            if (!donor_is_high) {
-                donor_k = donor.ng + d;
-            } else {
-                donor_k = donor.ng + donor.nk_core - 1 - d;
-            }
+            Int I1 = i - ng + 1;
+            Int J1 = j - ng + 1;
 
-            node_x(i, j, k) = donor.node_x(i, j, donor_k) - tx;
-            node_y(i, j, k) = donor.node_y(i, j, donor_k) - ty;
-            node_z(i, j, k) = donor.node_z(i, j, donor_k) - tz;
-        }}}
-    }
-}
+            Int I2, J2, K2;
+            map_cgns_point(I1, J1, k_face_1b, I2, J2, K2);
 
-inline void Grid::fill_ghost_face_periodic(int face, const Connectivity& conn) {
-    // This implementation handles the simple case where transform = {1,2,3}
-    // (no direction reversal).  Reversed transforms are TODO.
+            Int di = to_extended(I2, donor.ng);
+            Int dj = to_extended(J2, donor.ng);
+            Int dk = step_inward(d, donor.nk_core, donor.ng);
 
-    // Determine donor face side (MIN or MAX).
-    // For transform={1,2,3} the donor dimension matches cur_dim, so we
-    // only need the side (high/low).  Direction-reversed transforms TODO.
-    bool donor_is_high = false;
-    if (conn.donor_imin == conn.donor_imax) {
-        donor_is_high = (conn.donor_imin == ni_core);  // 1-based donor index
-    } else if (conn.donor_jmin == conn.donor_jmax) {
-        donor_is_high = (conn.donor_jmin == nj_core);
-    } else if (conn.donor_kmin == conn.donor_kmax) {
-        donor_is_high = (conn.donor_kmin == nk_core);
-    }
-
-    // Current face information
-    // face: 0=IMIN, 1=IMAX, 2=JMIN, 3=JMAX, 4=KMIN, 5=KMAX
-    int cur_dim = face / 2;          // 0=i, 1=j, 2=k
-    bool cur_is_high = (face % 2 == 1); // odd = MAX side
-
-    // The ghost sign: for the LOW side, ghost nodes are at -d direction;
-    // donor interior lies inward from the donor face in the same direction.
-    // Ghost coord = donor_interior_coord - translation
-    // (derived from: ghost is the periodic image of donor interior,
-    //  where periodic mapping gives donor_periodic = current + translation
-    //  → ghost = donor_interior - translation for all faces)
-    Real tx = conn.translation[0];
-    Real ty = conn.translation[1];
-    Real tz = conn.translation[2];
-
-    // Iterate over the ghost region for this face
-    if (cur_dim == 0) {
-        // IMIN or IMAX: ghost i varies, j,k span the full extended range
-        Int i_start, i_end, i_step;
-        if (!cur_is_high) {
-            // IMIN: ghost i = 0 .. ng-1 (outward in -i direction)
-            i_start = 0;
-            i_end   = ng;
-            i_step  = 1;
-        } else {
-            // IMAX: ghost i = ng+ni_core .. ni-1 (outward in +i direction)
-            i_start = ng + ni_core;
-            i_end   = ni;
-            i_step  = 1;
-        }
-
-        for (Int k = 0; k < nk; ++k) {
-        for (Int j = 0; j < nj; ++j) {
-        for (Int i = i_start; i < i_end; i += i_step) {
-            // Distance from the face (1-based): ghost layer d
-            Int d;
-            if (!cur_is_high) {
-                d = ng - i;  // i=0 → d=ng (farthest), i=ng-1 → d=1 (closest)
-            } else {
-                d = i - (ng + ni_core) + 1;  // i=ng+ni_core → d=1, i=ni-1 → d=ng
-            }
-
-            // Donor interior index (for the normal dimension)
-            Int donor_index;
-            if (donor_is_high) {
-                // Donor face is a MAX side → interior is inward at face - d
-                donor_index = ng + ni_core - 1 - d;  // last core node - d
-            } else {
-                // Donor face is a MIN side → interior is inward at face + d
-                donor_index = ng + d;
-            }
-
-            // TODO: handle direction reversals in transform
-            // For now assume transform = {1,2,3}: j→j, k→k
-            Real xn = node_x(donor_index, j, k);
-            Real yn = node_y(donor_index, j, k);
-            Real zn = node_z(donor_index, j, k);
-
-            node_x(i, j, k) = xn - tx;
-            node_y(i, j, k) = yn - ty;
-            node_z(i, j, k) = zn - tz;
-        }}}
-    } else if (cur_dim == 1) {
-        // JMIN or JMAX
-        Int j_start, j_end, j_step;
-        if (!cur_is_high) {
-            j_start = 0;
-            j_end   = ng;
-            j_step  = 1;
-        } else {
-            j_start = ng + nj_core;
-            j_end   = nj;
-            j_step  = 1;
-        }
-
-        for (Int k = 0; k < nk; ++k) {
-        for (Int j = j_start; j < j_end; j += j_step) {
-        for (Int i = 0; i < ni; ++i) {
-            Int d;
-            if (!cur_is_high) {
-                d = ng - j;
-            } else {
-                d = j - (ng + nj_core) + 1;
-            }
-
-            Int donor_index;
-            if (donor_is_high) {
-                donor_index = ng + nj_core - 1 - d;
-            } else {
-                donor_index = ng + d;
-            }
-
-            Real xn = node_x(i, donor_index, k);
-            Real yn = node_y(i, donor_index, k);
-            Real zn = node_z(i, donor_index, k);
-
-            node_x(i, j, k) = xn - tx;
-            node_y(i, j, k) = yn - ty;
-            node_z(i, j, k) = zn - tz;
-        }}}
-    } else {
-        // KMIN or KMAX (cur_dim == 2)
-        Int k_start, k_end, k_step;
-        if (!cur_is_high) {
-            k_start = 0;
-            k_end   = ng;
-            k_step  = 1;
-        } else {
-            k_start = ng + nk_core;
-            k_end   = nk;
-            k_step  = 1;
-        }
-
-        for (Int k = k_start; k < k_end; k += k_step) {
-        for (Int j = 0; j < nj; ++j) {
-        for (Int i = 0; i < ni; ++i) {
-            Int d;
-            if (!cur_is_high) {
-                d = ng - k;
-            } else {
-                d = k - (ng + nk_core) + 1;
-            }
-
-            Int donor_index;
-            if (donor_is_high) {
-                donor_index = ng + nk_core - 1 - d;
-            } else {
-                donor_index = ng + d;
-            }
-
-            Real xn = node_x(i, j, donor_index);
-            Real yn = node_y(i, j, donor_index);
-            Real zn = node_z(i, j, donor_index);
-
-            node_x(i, j, k) = xn - tx;
-            node_y(i, j, k) = yn - ty;
-            node_z(i, j, k) = zn - tz;
+            node_x(i, j, k) = donor.node_x(di, dj, dk) - tx;
+            node_y(i, j, k) = donor.node_y(di, dj, dk) - ty;
+            node_z(i, j, k) = donor.node_z(di, dj, dk) - tz;
         }}}
     }
 }
@@ -566,9 +411,9 @@ inline void Grid::fill_ghost_face_extrapolate(int face) {
 // Metric coefficient computation (SCMM)
 // ============================================================================
 
-inline void Grid::build_face_periodic(bool face_periodic[6]) const {
+inline void Grid::build_face_connected(bool face_connected[6]) const {
     for (int f = 0; f < 6; ++f) {
-        face_periodic[f] = (find_periodic_connection(f) != nullptr);
+        face_connected[f] = (find_face_connection(f) != nullptr);
     }
 }
 
@@ -589,7 +434,7 @@ inline void Grid::compute_metrics() {
 
     // ---- 1. Determine periodic faces ----
     bool fp[6];
-    build_face_periodic(fp);
+    build_face_connected(fp);
 
     const Real dh = 1.0;  // computational-space grid spacing
 
@@ -847,7 +692,7 @@ inline void Grid::compute_metrics_uniform() {
 
 inline void Grid::compute_face_metrics() {
     bool fp[6];
-    build_face_periodic(fp);
+    build_face_connected(fp);
 
     if (metrics_type == "uniform") {
         // Uniform grid: face metrics equal cell-center metrics (all constant).
